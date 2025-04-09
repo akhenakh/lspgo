@@ -1,0 +1,138 @@
+## Example
+
+let's create the minimal example and show how to integrate it with Helix.
+
+The code you provided is already a very good starting point for a minimal LSP server. The `lspgo/main.go` file essentially *is* the server executable's main logic.
+
+**1. The LSP Server Code (Using Your Provided Code)**
+
+We'll use the exact code you provided. Ensure the files are structured correctly in your Go project:
+
+```
+your-project-root/
+├── go.mod
+├── go.sum
+└── lspgo/
+    ├── main.go             # Server entry point
+    ├── jsonrpc2/
+    │   ├── conn.go
+    │   ├── jsonrpc2.go
+    │   └── stream.go
+    ├── protocol/
+    │   ├── document.go
+    │   ├── general.go
+    │   ├── hover.go
+    │   └── types.go
+    └── server/
+        ├── handler.go
+        ├── options.go
+        └── server.go
+```
+
+Make sure you have the necessary `go.mod` file. If you don't, run `go mod init your-project-root` (replace `your-project-root` with your actual project module path) and then `go mod tidy` in the `your-project-root` directory.
+
+**2. Build the LSP Server**
+
+Navigate to the directory containing `lspgo/main.go` (which is `your-project-root/lspgo` in the structure above) or just the project root, and build the executable:
+
+```bash
+# Navigate to your project root
+cd /path/to/your-project-root
+
+# Build the server executable (output name will be 'lspgo' or 'lspgo.exe')
+# Place the output in the root for easier access, or choose another location.
+go build -o lspgo-server ./lspgo
+```
+
+This will create an executable file named `lspgo-server` in your project's root directory (or wherever your current directory is when you run `go build`). Make sure this file is executable (`chmod +x lspgo-server` on Linux/macOS if needed).
+
+**3. Configure Helix**
+
+Helix uses a configuration file, typically `languages.toml`, to define how to interact with language servers.
+
+*   **Locate your Helix configuration directory:**
+    *   Linux: `~/.config/helix/`
+    *   macOS: `~/Library/Application Support/helix/`
+    *   Windows: `%AppData%\helix\`
+*   **Edit or Create `languages.toml`:** Inside that directory, find or create the `languages.toml` file.
+*   **Add a Language Entry:** Add the following configuration block to `languages.toml`. We'll define a new dummy language `mylang` associated with files ending in `.mylang` to test our server.
+
+```toml
+# ~/.config/helix/languages.toml
+
+[language-server.lspgo]
+command = "/home/akh/dev/lspgo/lspgo"
+
+[[language]]
+name = "mylang" # Choose a name for your language
+scope = "source.mylang" # A TextMate scope name (can be custom)
+file-types = ["mylang"] # Associate with files ending in '.mylang'
+roots = [] # Optional: Define project root markers if needed
+comment-token = "#" # Optional: Define comment style
+indent = { tab-width = 4, unit = "    " } # Optional: Define indentation
+
+# --- LSP Configuration ---
+# Adjust the 'command' path to point to your actual built executable!
+language-servers = ["lspgo"]
+
+
+
+# Optional: You can pass command-line arguments if your server needs them
+# language-server = { command = "/path/to/lspgo-server", args = ["--log-file", "/tmp/lsp.log"] }
+```
+
+**Crucial Step:** Replace `/full/path/to/your/lspgo-server` with the *actual, absolute path* to the `lspgo-server` executable you built in step 2. Relative paths might work but absolute paths are generally more reliable.
+
+**4. Test with Helix**
+
+1.  **Create a Test File:** Create a file named `test.mylang` anywhere on your system:
+    ```
+    # test.mylang
+    This is a test file for mylang.
+
+    Let's try hovering over this line.
+    Or editing this content.
+    ```
+
+2.  **Launch Helix:** Open this file with Helix from your terminal:
+    ```bash
+    hx test.mylang
+    ```
+
+3.  **Observe Server Logs:**
+    *   Since the example server logs to `stderr` by default, you *might* see log messages directly in the terminal where you launched Helix, especially the initial "Starting LSP server..." message.
+    *   Alternatively, open the Helix log buffer within Helix using the command `:log-open` (type `:log-open` and press Enter). You should see messages like:
+        *   `lsp: server.go:NNN: Handling initialize request...`
+        *   `lsp: server.go:NNN: Initialize successful, waiting for 'initialized' notification.`
+        *   `lsp: server.go:NNN: Server transitioned to running state.`
+        *   `lsp: main.go:NNN: Document Opened: file:///path/to/your/test.mylang ...`
+
+4.  **Test Features:**
+    *   **DidOpen:** When you open the file, the server should log the "Document Opened" message (check the Helix log or your terminal).
+    *   **DidChange:** Type some characters in the file. The server should log "Document Changed" messages, including "Full content change" because we configured `SyncFull`.
+    *   **Hover:** Move your cursor over some text and use Helix's hover keybinding (often `Space` + `k` in normal mode, check your Helix keybindings). You should see a hover popup appear containing the dummy Markdown content generated by `handleHover` in `main.go`:
+        ```markdown
+        ## Hover Info
+
+        Document: `file:///path/to/your/test.mylang`
+        Position: Line X, Char Y
+
+        *Provide real information here!*
+        ```
+        Simultaneously, the server log should show a "Hover Request" message.
+
+5.  **Shutdown/Exit:** When you quit Helix (e.g., `:q!`), Helix will send `shutdown` and `exit` requests. The server logs should show:
+    *   `lsp: server.go:NNN: Handling shutdown request...`
+    *   `lsp: server.go:NNN: Waiting for pending requests to complete...`
+    *   `lsp: server.go:NNN: All pending requests completed.`
+    *   `lsp: server.go:NNN: Handling exit notification.`
+    *   `lsp: server.go:NNN: Exiting process with code 0.`
+    *   `lsp: server.go:NNN: Server stopped.` (This might appear just before the process exits).
+
+**Summary**
+
+You now have:
+
+1.  A compiled LSP server (`lspgo-server`) built from the provided Go code.
+2.  Helix configured (`languages.toml`) to launch this server for files with the `.mylang` extension.
+3.  A way to test the basic LSP interactions (open, change, hover) between Helix and your server by editing a `.mylang` file and observing the server logs and the hover popup in Helix.

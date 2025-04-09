@@ -1,0 +1,22 @@
+# test.mylang
+This is a test file for mylang.
+
+Let's try hovering over this line.
+Or editing this content.
+
+# write fibonacci
+# write fibonacci
+
+fibonacci = fn(n) {
+    if (n <= 1) {
+        return n
+    } else {
+        return fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+print(fibonacci(10))  # Output should be 55
+todo
+
+
+
