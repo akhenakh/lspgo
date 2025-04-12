@@ -105,7 +105,7 @@ func (c *Conn) Write(ctx context.Context, msg interface{}) error {
 	return c.stream.WriteMessage(msg)
 }
 
-// Close closes the underlying stream if it implements io.Closer.
+// Close closes the underlying stream.
 func (c *Conn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -115,10 +115,6 @@ func (c *Conn) Close() error {
 	}
 	c.closed = true
 
-	if closer, ok := c.stream.writer.(io.Closer); ok {
-		return closer.Close()
-	}
-	// If only reader is closer? Less common for combined stream.
-	// if closer, ok := c.stream.reader.(io.Closer); ok { ... }
-	return nil // No closer found
+	// Use the Stream's Close method which handles the original source
+	return c.stream.Close()
 }

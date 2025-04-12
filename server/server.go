@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic" // For atomic state checks
+	"time"
 
 	"github.com/akhenakh/lspgo/jsonrpc2"
 	"github.com/akhenakh/lspgo/protocol"
@@ -108,9 +109,21 @@ func (s *Server) Register(method string, handlerFunc interface{}) error {
 func (s *Server) Run(ctx context.Context) error {
 	s.logger.Println("Server starting listener loop...")
 	defer s.logger.Println("Server listener loop stopped.")
-	defer func() {
-		s.logger.Println("Closing connection...")
-		s.conn.Close() // Ensure connection is closed on exit
+
+	// Create a done channel to signal when we're exiting
+	done := make(chan struct{})
+	defer close(done)
+
+	// Set up a goroutine to handle clean context cancellation
+	go func() {
+		select {
+		case <-ctx.Done():
+			s.logger.Printf("Context cancelled, initiating shutdown: %v", ctx.Err())
+			// Try to close the connection gracefully
+			s.conn.Close()
+		case <-done:
+			// Normal exit through return - no action needed
+		}
 	}()
 
 	for {
@@ -130,15 +143,19 @@ func (s *Server) Run(ctx context.Context) error {
 			if err == io.EOF || err == io.ErrClosedPipe || err == context.Canceled || err == context.DeadlineExceeded {
 				// Expected closure or cancellation
 				s.logger.Printf("Connection closed or context cancelled, exiting run loop: %v", err)
-				// Check state: if not shutdown gracefully, maybe log an error?
-				if s.currentState() != stateShutdown {
-					s.logger.Println("Client closed connection unexpectedly or context cancelled before shutdown.")
-					// Consider specific error types? For now, just return the original error.
-					if err == io.EOF {
-						return io.ErrUnexpectedEOF // Indicate unclean shutdown
-					}
+
+				// If we're in shutdown state, this is expected - return nil
+				if s.currentState() == stateShutdown {
+					return nil
 				}
-				return nil // Graceful exit after shutdown or expected closure
+
+				// Check state: if not shutdown gracefully, maybe log an error?
+				s.logger.Println("Client closed connection unexpectedly or context cancelled before shutdown.")
+				// Consider specific error types? For now, just return the original error.
+				if err == io.EOF {
+					return io.ErrUnexpectedEOF // Indicate unclean shutdown
+				}
+				return err
 			}
 
 			// Log other read errors (e.g., JSON parsing errors within Read)
@@ -279,8 +296,8 @@ func (s *Server) handleNotification(ctx context.Context, n *jsonrpc2.Notificatio
 		s.mu.RUnlock()
 		if found {
 			// Invoke exit handler directly - it doesn't return
-			// It expects context, no params
-			handler.invoke(ctx, s.conn, nil) // Pass nil conn? Exit shouldn't write. Pass nil params.
+			// It expects context, no params. Pass nil conn as exit shouldn't write.
+			handler.invoke(ctx, nil, nil) // Pass nil for conn
 			// The invoke will call the registered s.handleExit
 		} else {
 			s.logger.Println("No handler registered for exit, performing default exit(1)")
@@ -509,57 +526,64 @@ func (s *Server) handleInitialized(ctx context.Context, params *protocol.Initial
 }
 
 // handleShutdown: func(ctx context.Context) error
-// No params expected.
 func (s *Server) handleShutdown(ctx context.Context) error {
 	s.logger.Println("Handling shutdown request...")
 
 	// Mark state as shutting down atomically and only once.
-	shutdownStarted := false
 	s.shutdownOnce.Do(func() {
 		// Attempt to transition from any valid pre-shutdown state
 		if s.state.CompareAndSwap(stateRunning, stateShutdown) ||
 			s.state.CompareAndSwap(stateInitializing, stateShutdown) ||
 			s.state.CompareAndSwap(stateUninitialized, stateShutdown) {
 			s.logger.Println("Server transitioning to shutdown state.")
-			shutdownStarted = true
 			// Cancel any long-running background tasks here using a cancel func derived from main context
 		} else {
 			s.logger.Printf("Shutdown requested but already in state: %d", s.currentState())
 		}
 	})
 
-	if !shutdownStarted && s.currentState() != stateShutdown {
-		// This case should ideally not happen due to CAS, but as a fallback...
-		// If shutdownOnce already ran but state isn't shutdown (e.g. concurrent issue), error?
-		// Or just log and proceed with wait. For now, log.
-		s.logger.Println("Shutdown request received, but state transition failed or already shut down.")
-	}
-
-	// Wait for all currently processing requests/notifications to complete.
-	// New requests/notifications (except 'exit') will be rejected by state check.
-	s.logger.Println("Waiting for pending requests/notifications to complete...")
-	s.pendingReqs.Wait() // Wait for counter to reach zero
-	s.logger.Println("All pending requests/notifications completed.")
-
-	// Respond nil error *after* pending work is done, as required by LSP spec.
+	// Respond nil error *immediately* after setting state, as required by LSP spec.
+	// The actual waiting happens before exit.
 	return nil
 }
 
 // handleExit: func(ctx context.Context)
-// No params expected.
 func (s *Server) handleExit(ctx context.Context) {
 	s.logger.Println("Handling exit notification.")
-	// Terminate the process based on whether shutdown was called.
-	exitCode := 1 // Default to 1 (error)
-	if s.currentState() == stateShutdown {
-		exitCode = 0 // Graceful shutdown completed
-		s.logger.Println("Clean exit following shutdown.")
+
+	// Determine the state *before* waiting, as this decides the exit code.
+	currentStateBeforeWait := s.currentState()
+	exitCode := 1 // Default to 1 (error/unexpected exit)
+	if currentStateBeforeWait == stateShutdown {
+		exitCode = 0 // Graceful shutdown path was followed
+		s.logger.Println("Shutdown completed, waiting for final pending tasks before clean exit.")
 	} else {
-		s.logger.Println("Exit called without prior successful shutdown. Exiting with code 1.")
+		s.logger.Println("Exit called without prior successful shutdown. Waiting briefly for pending tasks before error exit.")
 	}
 
-	s.logger.Printf("Terminating process with code %d.", exitCode)
-	s.conn.Close() // Attempt to close connection gracefully
+	// Wait for any remaining pending requests (that were started before shutdown completed)
+	// Use a reasonable timeout to prevent hanging indefinitely.
+	waitCh := make(chan struct{})
+	go func() {
+		s.pendingReqs.Wait() // Wait for counter to reach zero
+		close(waitCh)
+	}()
+
+	select {
+	case <-waitCh:
+		s.logger.Println("All pending tasks completed before exit.")
+	case <-time.After(2 * time.Second): // Shorter timeout, exit should be quick
+		s.logger.Println("Timed out waiting for pending tasks during exit - proceeding with exit anyway")
+	}
+
+	// Close connection before exiting
+	s.logger.Printf("Closing connection and terminating process with code %d.", exitCode)
+	if err := s.conn.Close(); err != nil {
+		// Log error but proceed with exit
+		s.logger.Printf("Error closing connection during exit: %v", err)
+	}
+
+	// Force exit. Using AfterFunc can be unreliable if the main goroutine exits first.
 	os.Exit(exitCode)
 }
 

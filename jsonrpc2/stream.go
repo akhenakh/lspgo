@@ -20,6 +20,7 @@ const (
 type Stream struct {
 	reader *bufio.Reader
 	writer io.Writer
+	source io.ReadWriter // Keep the original source
 }
 
 // NewStream creates a new Stream.
@@ -27,7 +28,16 @@ func NewStream(rw io.ReadWriter) *Stream {
 	return &Stream{
 		reader: bufio.NewReader(rw),
 		writer: rw,
+		source: rw,
 	}
+}
+
+// Close closes the underlying source if it implements io.Closer.
+func (s *Stream) Close() error {
+	if closer, ok := s.source.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // ReadMessage reads a single JSON-RPC message from the stream.
