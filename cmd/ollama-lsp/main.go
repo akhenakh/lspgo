@@ -463,40 +463,6 @@ func parseExplanationResponse(response string) ([]ExplanationItem, error) {
 	return result.Explanations, nil
 }
 
-// Function to create diagnostics from explanation items
-func createDiagnosticsFromExplanations(explanations []ExplanationItem, selectionRange protocol.Range) []protocol.Diagnostic {
-	diagnostics := make([]protocol.Diagnostic, 0, len(explanations))
-
-	// This is a design issue - we need the actual text content to split into lines
-	// Let's modify our approach
-
-	for _, item := range explanations {
-		// Calculate the actual line in the document
-		actualLine := int(selectionRange.Start.Line) + item.LineNumber
-
-		// Create diagnostic for this line - span the whole line
-		diagnostic := protocol.Diagnostic{
-			Range: protocol.Range{
-				Start: protocol.Position{
-					Line:      uint(actualLine),
-					Character: 0, // Start from beginning of line
-				},
-				End: protocol.Position{
-					Line:      uint(actualLine),
-					Character: 1000, // Use a large number to cover the whole line
-				},
-			},
-			Severity: protocol.SeverityInfo, // Use Info severity for explanations
-			Source:   "ollama-lsp",
-			Message:  item.Explanation,
-		}
-
-		diagnostics = append(diagnostics, diagnostic)
-	}
-
-	return diagnostics
-}
-
 // Function to send diagnostics to the client
 func sendDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, uri protocol.DocumentURI, diagnostics []protocol.Diagnostic) {
 	params := protocol.PublishDiagnosticsParams{
@@ -611,9 +577,8 @@ func cleanOllamaCodeResult(rawResult string) string {
 			trimmed = lines[1] // Skip the first line (```lang)
 		}
 	}
-	if strings.HasSuffix(trimmed, "```") {
-		trimmed = strings.TrimSuffix(trimmed, "```")
-	}
+	trimmed = strings.TrimSuffix(trimmed, "```")
+
 	return strings.TrimSpace(trimmed) // Trim again after removing fences
 }
 
@@ -660,7 +625,7 @@ func callOllama(ctx context.Context, prompt string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("ollama request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -769,16 +734,6 @@ func getTextInRange(content string, rng protocol.Range) (string, error) {
 	return builder.String(), nil
 }
 
-// getTextAtLine extracts the text at the specified line number.
-func getTextAtLine(content string, lineNum uint) (string, uint, error) {
-	lines := strings.Split(content, "\n")
-	if int(lineNum) >= len(lines) {
-		return "", lineNum, fmt.Errorf("line number %d is out of bounds (0-%d)", lineNum, len(lines)-1)
-	}
-
-	return lines[lineNum], lineNum, nil
-}
-
 // getCurrentLine extracts the text at the specified line number.
 func getCurrentLine(content string, lineNum uint) (string, error) {
 	lines := strings.Split(content, "\n")
@@ -849,8 +804,6 @@ func applyOllamaLineReplacement(ctx context.Context, conn *jsonrpc2.Conn, uri pr
 	return nil
 }
 
-// --- LSP Notification Helper ---
-
 // showNotification sends a window/showMessage notification to the client.
 func showNotification(ctx context.Context, conn *jsonrpc2.Conn, msgType protocol.MessageType, message string) {
 	params := protocol.ShowMessageParams{
@@ -881,71 +834,6 @@ func showNotification(ctx context.Context, conn *jsonrpc2.Conn, msgType protocol
 		log.Printf("Error sending showMessage notification: %v", err)
 	} else {
 		log.Printf("Sent showMessage notification (Type: %d)", msgType)
-	}
-}
-
-// --- (Optional) Example Diagnostics ---
-
-// sendDummyDiagnostics sends simple example diagnostics to the client.
-// sendDummyDiagnostics sends simple example diagnostics to the client.
-func sendDummyDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, uri protocol.DocumentURI) {
-	log.Printf("Sending dummy diagnostics for %s", uri)
-	diagnostics := []protocol.Diagnostic{}
-
-	// Example: Add a warning if document is empty (after getting content)
-	docMu.RLock()
-	docItem := documents[uri]
-	content := docItem.Text // Get the text content from the TextDocumentItem
-	docMu.RUnlock()
-
-	if content == "" {
-		diagnostics = append(diagnostics, protocol.Diagnostic{
-			Range: protocol.Range{ // Range for the whole document (start)
-				Start: protocol.Position{Line: 0, Character: 0},
-				End:   protocol.Position{Line: 0, Character: 0},
-			},
-			Severity: protocol.SeverityWarning,
-			Source:   "ollama-lsp",
-			Message:  "Document is empty.",
-		})
-	} else if strings.Contains(strings.ToLower(content), "todo") {
-		// Find first "TODO"
-		lines := strings.Split(content, "\n")
-		for i, line := range lines {
-			if idx := strings.Index(strings.ToLower(line), "todo"); idx != -1 {
-				diagnostics = append(diagnostics, protocol.Diagnostic{
-					Range: protocol.Range{
-						Start: protocol.Position{Line: uint(i), Character: uint(idx)},
-						End:   protocol.Position{Line: uint(i), Character: uint(idx + 4)},
-					},
-					Severity: protocol.SeverityInfo,
-					Source:   "ollama-lsp",
-					Message:  "Found TODO item.",
-				})
-				break // Just show the first one
-			}
-		}
-	}
-
-	params := protocol.PublishDiagnosticsParams{
-		URI:         uri,
-		Diagnostics: diagnostics,
-		// Version: optional document version
-	}
-
-	// --- Send Notification using conn.Write ---
-	rawParams, err := json.Marshal(params)
-	if err != nil {
-		log.Printf("Error marshalling diagnostics params: %v", err)
-		return
-	}
-	notification := &jsonrpc2.NotificationMessage{
-		JSONRPC: jsonrpc2.Version,
-		Method:  protocol.MethodTextDocumentPublishDiagnostics,
-		Params:  rawParams,
-	}
-	if err := conn.Write(ctx, notification); err != nil {
-		log.Printf("Error sending diagnostics notification: %v", err)
 	}
 }
 

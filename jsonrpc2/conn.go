@@ -55,7 +55,7 @@ func (c *Conn) Read(ctx context.Context) (interface{}, error) {
 	}
 
 	if base.Method != "" {
-		if base.ID != nil && len(base.ID) > 0 && string(base.ID) != "null" {
+		if len(base.ID) > 0 && string(base.ID) != "null" {
 			// It's a Request
 			var req RequestMessage
 			if err := json.Unmarshal(jsonData, &req); err != nil {
@@ -73,7 +73,7 @@ func (c *Conn) Read(ctx context.Context) (interface{}, error) {
 
 	// It must be a Response (we don't expect to *receive* responses in a server context,
 	// but a generic Conn should handle it). Could also be an error during parsing.
-	if base.ID != nil && len(base.ID) > 0 && string(base.ID) != "null" {
+	if len(base.ID) > 0 && string(base.ID) != "null" {
 		var resp ResponseMessage
 		if err := json.Unmarshal(jsonData, &resp); err != nil {
 			return nil, NewError(ParseError, fmt.Sprintf("failed to parse response message: %v", err))

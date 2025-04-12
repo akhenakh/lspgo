@@ -26,15 +26,15 @@ type typedHandler struct {
 
 // invoke calls the underlying user handler after decoding params.
 // It now accepts conn *jsonrpc2.Conn and params json.RawMessage.
-func (h *typedHandler) invoke(ctx context.Context, conn *jsonrpc2.Conn, params json.RawMessage) (result interface{}, err error) {
-	var paramsPtr interface{} // Pointer to the params struct
+func (h *typedHandler) invoke(ctx context.Context, conn *jsonrpc2.Conn, params json.RawMessage) (result any, err error) {
+	var paramsPtr any // Pointer to the params struct
 
 	if h.takesParams && h.paramType != nil { // Check if parameters are defined and expected for this handler
 		paramsValue := reflect.New(h.paramType) // Create a pointer to a new value of the param type
 		paramsPtr = paramsValue.Interface()     // Get the pointer as an interface{}
 
 		// Try to unmarshal ONLY if params are present
-		if params != nil && len(params) > 0 && string(params) != "null" {
+		if len(params) > 0 && string(params) != "null" {
 			if err := json.Unmarshal(params, paramsPtr); err != nil {
 				// Use specific JSON-RPC error code
 				return nil, &jsonrpc2.ErrorObject{
@@ -47,7 +47,7 @@ func (h *typedHandler) invoke(ctx context.Context, conn *jsonrpc2.Conn, params j
 	} else {
 		// No parameters defined/expected, or handler signature doesn't take params.
 		// Check if the client incorrectly sent parameters when none were expected.
-		if params != nil && len(params) > 0 && string(params) != "null" {
+		if len(params) > 0 && string(params) != "null" {
 			// Decide whether to error or ignore. LSP often ignores extra params in notifications.
 			// For requests, returning an error might be better.
 			// Let's return an error for now if unexpected params are received by a handler that doesn't expect them.
@@ -102,7 +102,6 @@ func (h *typedHandler) invoke(ctx context.Context, conn *jsonrpc2.Conn, params j
 			// Note: paramsPtr is nil here. We need the *type* expected by the handler.
 			args = append(args, reflect.Zero(paramArgType)) // Pass zero value for the expected type
 		}
-		argIndex++
 	}
 
 	// Check if the number of arguments matches

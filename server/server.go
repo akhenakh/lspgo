@@ -78,7 +78,7 @@ func (s *Server) registerDefaultHandlers() {
 
 // Register associates a handler function with an LSP method name.
 // The handler func must match the expected signature patterns (see handler.go).
-func (s *Server) Register(method string, handlerFunc interface{}) error {
+func (s *Server) Register(method string, handlerFunc any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -120,7 +120,7 @@ func (s *Server) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			s.logger.Printf("Context cancelled, initiating shutdown: %v", ctx.Err())
 			// Try to close the connection gracefully
-			s.conn.Close()
+			s.conn.Close() //nolint:errcheck
 		case <-done:
 			// Normal exit through return - no action needed
 		}
@@ -173,7 +173,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 		// Process the message in a separate goroutine for concurrency
 		s.pendingReqs.Add(1)
-		go func(m interface{}) {
+		go func(m any) {
 			defer s.pendingReqs.Done()
 			// Create a per-message context if needed, inheriting from the main one
 			// msgCtx, cancel := context.WithTimeout(ctx, 30*time.Second) // Example timeout
@@ -297,7 +297,11 @@ func (s *Server) handleNotification(ctx context.Context, n *jsonrpc2.Notificatio
 		if found {
 			// Invoke exit handler directly - it doesn't return
 			// It expects context, no params. Pass nil conn as exit shouldn't write.
-			handler.invoke(ctx, nil, nil) // Pass nil for conn
+			_, err := handler.invoke(ctx, nil, nil)
+			if err != nil {
+				s.logger.Printf("Error in exit handler: %v", err)
+				// No need to return since we're exiting anyway
+			}
 			// The invoke will call the registered s.handleExit
 		} else {
 			s.logger.Println("No handler registered for exit, performing default exit(1)")
@@ -329,7 +333,7 @@ func (s *Server) handleNotification(ctx context.Context, n *jsonrpc2.Notificatio
 // sendResponse marshals and sends a JSON-RPC response.
 func (s *Server) sendResponse(ctx context.Context, id json.RawMessage, result interface{}, respErr *jsonrpc2.ErrorObject) {
 	// Ensure ID is valid before proceeding
-	if id == nil || len(id) == 0 || string(id) == "null" {
+	if len(id) == 0 || string(id) == "null" {
 		s.logger.Printf("Attempted to send response for notification or invalid request ID. Ignoring.")
 		return
 	}
@@ -339,39 +343,35 @@ func (s *Server) sendResponse(ctx context.Context, id json.RawMessage, result in
 		ID:      id, // Echo back the original request ID
 	}
 
+	// Set error if present
 	if respErr != nil {
 		response.Error = respErr
-		// Don't log the full error here if it was already logged by the caller, just log that an error is being sent.
-	} else {
-		// Marshal result only if non-nil and no error
-		if result != nil {
-			// Ensure result is marshallable
-			rawResult, err := json.Marshal(result)
-			if err != nil {
-				s.logger.Printf("Error marshalling result for ID %s: %v. Sending InternalError instead.", string(id), err)
-				// Send internal error instead of potentially malformed response
-				response.Error = jsonrpc2.NewError(jsonrpc2.InternalError, fmt.Sprintf("failed to marshal result: %v", err))
-			} else {
-				response.Result = rawResult
-			}
+		// Don't log the full error here if it was already logged by the caller
+	} else if result != nil {
+		// Marshal result if non-nil and no error
+		rawResult, err := json.Marshal(result)
+		if err != nil {
+			s.logger.Printf("Error marshalling result for ID %s: %v. Sending InternalError instead.", string(id), err)
+			response.Error = jsonrpc2.NewError(jsonrpc2.InternalError, fmt.Sprintf("failed to marshal result: %v", err))
 		} else {
-			// If result is nil and no error, LSP expects 'result: null'
-			response.Result = json.RawMessage("null")
+			response.Result = rawResult
 		}
+	} else {
+		// If result is nil and no error, LSP expects 'result: null'
+		response.Result = json.RawMessage("null")
 	}
 
-	// Log before writing
+	// Prepare log message
 	logMsg := fmt.Sprintf("<-- Response: ID=%s", string(id))
 	if response.Error != nil {
 		logMsg += fmt.Sprintf(", Error=%d", response.Error.Code)
 	} else {
-		// Optionally log result snippet? Can be large.
 		logMsg += ", Result=OK"
 	}
 	s.logger.Print(logMsg)
 
+	// Send the response
 	if err := s.conn.Write(ctx, response); err != nil {
-		// Log write errors, potentially indicates connection issues
 		s.logger.Printf("Error writing response for ID %s: %v", string(id), err)
 	}
 }
@@ -616,19 +616,23 @@ func (s *Server) handleCancel(ctx context.Context, params *json.RawMessage) {
 func (s *Server) handleProgress(ctx context.Context, params *json.RawMessage) {
 	// TODO: Handle progress updates from the client if the server initiated progress reporting.
 	// For now, just log it.
+	if params == nil {
+		s.logger.Printf("Received progress notification with nil params")
+		return
+	}
+
 	var progressParams struct {
 		Token json.RawMessage `json:"token"`
 		Value json.RawMessage `json:"value"`
 	}
-	if params != nil {
-		if err := json.Unmarshal(*params, &progressParams); err == nil {
-			s.logger.Printf("Received progress notification for Token: %s Value: %s (Progress handling not implemented)", string(progressParams.Token), string(progressParams.Value))
-		} else {
-			s.logger.Printf("Received malformed progress notification: %v", err)
-		}
-	} else {
-		s.logger.Printf("Received progress notification with nil params")
+
+	if err := json.Unmarshal(*params, &progressParams); err != nil {
+		s.logger.Printf("Received malformed progress notification: %v", err)
+		return
 	}
+
+	s.logger.Printf("Received progress notification for Token: %s Value: %s (Progress handling not implemented)",
+		string(progressParams.Token), string(progressParams.Value))
 }
 
 // Notify sends a notification to the client.
