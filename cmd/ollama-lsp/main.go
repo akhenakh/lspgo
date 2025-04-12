@@ -140,11 +140,7 @@ func handleDidClose(ctx context.Context, params *protocol.DidCloseTextDocumentPa
 	return nil
 }
 
-// handleCodeAction provides actions based on cursor position or selection.
-// Note: This handler needs access to `conn` to send notifications later if needed,
-// but the core logic here just returns actions. The `lspgo` handler reflection
-// supports including `conn` as the second argument.
-// handleCodeAction function modification - Add a third action
+// handleCodeAction function modification
 func handleCodeAction(ctx context.Context, conn *jsonrpc2.Conn, params *protocol.CodeActionParams) ([]protocol.CodeAction, error) {
 	uri := params.TextDocument.URI
 	log.Printf("Code Action Request: %s Range: %v", uri, params.Range)
@@ -177,7 +173,7 @@ func handleCodeAction(ctx context.Context, conn *jsonrpc2.Conn, params *protocol
 		},
 	})
 
-	// --- Action 2: Explain Selection ---
+	// --- Action 2: Explain Selection --- (modified)
 	if params.Range.Start != params.Range.End {
 		explainArgs := OllamaActionArgs{
 			Action: "explain",
@@ -187,17 +183,17 @@ func handleCodeAction(ctx context.Context, conn *jsonrpc2.Conn, params *protocol
 		explainCmdArgs, _ := json.Marshal(explainArgs)
 
 		actions = append(actions, protocol.CodeAction{
-			Title: "Ollama: Explain selection...",
-			Kind:  protocol.RefactorInline,
+			Title: "Ollama: Explain selection with diagnostics...",
+			Kind:  protocol.Source, // Changed to Source kind
 			Command: &protocol.Command{
-				Title:     "Ollama: Explain selection...",
+				Title:     "Ollama: Explain selection with diagnostics...",
 				Command:   "ollama/executeAction",
 				Arguments: []json.RawMessage{explainCmdArgs},
 			},
 		})
 	}
 
-	// --- Action 3: Prompt (Current Line) ---
+	// --- Action 3: Prompt (Current Line) --- (unchanged)
 	promptArgs := OllamaActionArgs{
 		Action:   "prompt",
 		URI:      uri,
@@ -207,7 +203,7 @@ func handleCodeAction(ctx context.Context, conn *jsonrpc2.Conn, params *protocol
 
 	actions = append(actions, protocol.CodeAction{
 		Title: "Ollama: Use current line as prompt...",
-		Kind:  protocol.Source, // Different kind for this action
+		Kind:  protocol.Source,
 		Command: &protocol.Command{
 			Title:     "Ollama: Use current line as prompt...",
 			Command:   "ollama/executeAction",
@@ -219,12 +215,14 @@ func handleCodeAction(ctx context.Context, conn *jsonrpc2.Conn, params *protocol
 	return actions, nil
 }
 
-// OllamaActionArgs defines the structure for arguments passed to our custom command
-type OllamaActionArgs struct {
-	Action   string               `json:"action"` // "continue" or "explain"
-	URI      protocol.DocumentURI `json:"uri"`
-	Position protocol.Position    `json:"position,omitempty"` // Used for "continue"
-	Range    *protocol.Range      `json:"range,omitempty"`    // Used for "explain"
+// Define a structure for parsing the JSON response from Ollama for explanations
+type ExplanationItem struct {
+	LineNumber  int    `json:"line"`
+	Explanation string `json:"explanation"`
+}
+
+type ExplanationResponse struct {
+	Explanations []ExplanationItem `json:"explanations"`
 }
 
 // handleExecuteCommand runs the Ollama logic based on the chosen Code Action.
@@ -253,13 +251,13 @@ func handleExecuteCommand(ctx context.Context, conn *jsonrpc2.Conn, params *prot
 	if !ok {
 		errMsg := fmt.Sprintf("Document %s not found for command %s", args.URI, params.Command)
 		log.Println(errMsg)
-		showNotification(ctx, conn, protocol.Error, errMsg) // Inform user via message still okay for error
-		return nil, fmt.Errorf(errMsg)                      // Internal error for server log
+		showNotification(ctx, conn, protocol.Error, errMsg)
+		return nil, fmt.Errorf(errMsg)
 	}
-	content := docItem.Text       // Extract content for prompt generation
-	docVersion := docItem.Version // Extract version for edit application
+	content := docItem.Text
+	docVersion := docItem.Version
 
-	// Show "Thinking..." message (still useful)
+	// Show "Thinking..." message
 	showNotification(ctx, conn, protocol.Info, fmt.Sprintf("Ollama (%s) is thinking...", args.Action))
 
 	var prompt string
@@ -268,12 +266,11 @@ func handleExecuteCommand(ctx context.Context, conn *jsonrpc2.Conn, params *prot
 	switch args.Action {
 	case "continue":
 		textBeforeCursor := getTextBeforePosition(content, args.Position)
-		// Improve prompt slightly for better code continuation
 		prompt = fmt.Sprintf(`You are an expert coding assistant. Continue the following code snippet directly without any preamble or explanation.
 Respond ONLY with the code that should come next.
 
 Code Snippet:
-%s`, textBeforeCursor) // Use the improved prompt
+%s`, textBeforeCursor)
 
 	case "explain":
 		if args.Range == nil {
@@ -285,20 +282,26 @@ Code Snippet:
 		}
 		if selectedText == "" {
 			showNotification(ctx, conn, protocol.Warning, "No text selected for 'explain'.")
-			return nil, nil // Command succeeded, nothing to do.
+			return nil, nil
 		}
-		// Improve prompt slightly
-		prompt = fmt.Sprintf(`You are an expert coding assistant. Explain the following code or text clearly and concisely.
 
-Code/Text Snippet:
-%s
+		// Modified prompt to request JSON response with line numbers and explanations
+		prompt = fmt.Sprintf(`You are an expert coding assistant. Analyze the following code and provide explanations.
+Format your response as a JSON object with an "explanations" array. Each item in the array should have a "line" number (relative to the selection, starting from 0) and an "explanation" string.
 
-Explanation:`, selectedText)
+Example format:
+{
+  "explanations": [
+    { "line": 0, "explanation": "This line initializes the variable..." },
+    { "line": 2, "explanation": "Here we call the function..." }
+  ]
+}
+
+Selected Code:
+%s`, selectedText)
 
 	case "prompt":
-		// Get current line text
 		lineNum := args.Position.Line
-
 		currentLine, err := getCurrentLine(content, lineNum)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to get current line: %v", err)
@@ -307,17 +310,14 @@ Explanation:`, selectedText)
 			return nil, nil
 		}
 
-		currentLine = strings.TrimSpace(currentLine) // Trim whitespace for cleaner instructions
-
-		// Get text before the current line
+		currentLine = strings.TrimSpace(currentLine)
 		textBeforeCursor := getTextBeforePosition(content, protocol.Position{
 			Line:      lineNum,
 			Character: 0,
 		})
-		// Remove potential trailing newline from textBeforeCursor for cleaner prompt formatting
 		textBeforeCursor = strings.TrimSuffix(textBeforeCursor, "\n")
 
-		if currentLine == "" { // Check after trimming
+		if currentLine == "" {
 			showNotification(ctx, conn, protocol.Warning, "Current line is empty. Please type a prompt/instruction first.")
 			return nil, nil
 		}
@@ -326,9 +326,8 @@ Explanation:`, selectedText)
 Respond ONLY with the code that should come next. %s.
 
 Code Snippet:
-%s`, currentLine, textBeforeCursor) // Use the improved prompt
+%s`, currentLine, textBeforeCursor)
 
-		// Show "Thinking..." message
 		showNotification(ctx, conn, protocol.Info, fmt.Sprintf("Ollama processing prompt: %s",
 			currentLine[:min(30, len(currentLine))]+strings.Repeat(".", min(3, 30-min(30, len(currentLine))))))
 
@@ -342,7 +341,7 @@ Code Snippet:
 		errMsg := fmt.Sprintf("Ollama request failed: %v", err)
 		log.Println(errMsg)
 		showNotification(ctx, conn, protocol.Error, errMsg)
-		return nil, nil // Command successful, underlying task failed
+		return nil, nil
 	}
 
 	log.Printf("Ollama response received for action '%s'", args.Action)
@@ -350,39 +349,85 @@ Code Snippet:
 	// --- Apply Result Based on Action ---
 	switch args.Action {
 	case "continue":
-		// Apply the result as a workspace edit
 		err = applyOllamaContinuation(ctx, conn, args.URI, docVersion, args.Position, ollamaResult)
 		if err != nil {
-			// Log error, maybe notify user
 			log.Printf("Error applying Ollama continuation edit: %v", err)
 			showNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to apply edit: %v", err))
 		} else {
 			log.Printf("Successfully requested 'workspace/applyEdit' for continuation")
-			// Maybe show a brief success notification? Optional.
 			showNotification(ctx, conn, protocol.Info, "Ollama continuation applied.")
 		}
 
 	case "explain":
-		// *** For explain, still show the result in a message window ***
-		messageToShow := fmt.Sprintf("Ollama Explanation:\n---\n%s\n---", ollamaResult) // Add separators
-		showNotification(ctx, conn, protocol.Info, messageToShow)
+		// New handling for explain action - parse JSON and create diagnostics
+		explanations, err := parseExplanationResponse(ollamaResult)
+		if err != nil {
+			log.Printf("Error parsing explanation response: %v", err)
+			showNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to parse explanation: %v", err))
+			// Fallback to show as notification if parsing fails
+			messageToShow := fmt.Sprintf("Ollama Explanation:\n---\n%s\n---", ollamaResult)
+			showNotification(ctx, conn, protocol.Info, messageToShow)
+			return nil, nil
+		}
+
+		selectedText, err := getTextInRange(content, *args.Range)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get text in range for 'explain': %w", err)
+		}
+
+		// Split the selected text into lines for proper line length calculations
+		selectedLines := strings.Split(selectedText, "\n")
+
+		// Create diagnostics from explanations
+		diagnostics := []protocol.Diagnostic{}
+		for _, item := range explanations {
+			// Skip invalid line numbers
+			if item.LineNumber < 0 || item.LineNumber >= len(selectedLines) {
+				continue
+			}
+
+			// Calculate the actual line in the document
+			actualLine := int(args.Range.Start.Line) + item.LineNumber
+			lineLength := uint(len(selectedLines[item.LineNumber]))
+
+			// Create diagnostic for this line
+			diagnostic := protocol.Diagnostic{
+				Range: protocol.Range{
+					Start: protocol.Position{
+						Line:      uint(actualLine),
+						Character: 0,
+					},
+					End: protocol.Position{
+						Line:      uint(actualLine),
+						Character: lineLength,
+					},
+				},
+				Severity: protocol.SeverityInfo,
+				Source:   "ollama-lsp",
+				Message:  item.Explanation,
+			}
+
+			diagnostics = append(diagnostics, diagnostic)
+		}
+
+		// Publish diagnostics to the editor
+		sendDiagnostics(ctx, conn, args.URI, diagnostics)
+
+		// Show a notification that diagnostics have been published
+		showNotification(ctx, conn, protocol.Info, "Explanation published as diagnostics in editor")
 
 	case "prompt":
 		lineNum := args.Position.Line
-		// Apply the result as a workspace edit, replacing the current line
-		// We need the original line text with original indentation/whitespace for replacement range calculation.
-		originalLine, err := getCurrentLine(content, lineNum) // Get the original line again
+		originalLine, err := getCurrentLine(content, lineNum)
 		if err != nil {
-			// This shouldn't happen if the first call succeeded, but handle defensively
 			errMsg := fmt.Sprintf("Failed to get original current line for replacement: %v", err)
 			log.Println(errMsg)
 			showNotification(ctx, conn, protocol.Error, errMsg)
 			return nil, nil
 		}
 
-		err = applyOllamaLineReplacement(ctx, conn, args.URI, docVersion, lineNum, originalLine, ollamaResult) // Use originalLine here
+		err = applyOllamaLineReplacement(ctx, conn, args.URI, docVersion, lineNum, originalLine, ollamaResult)
 		if err != nil {
-			// Log error, notify user
 			log.Printf("Error applying Ollama line replacement: %v", err)
 			showNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to apply edit: %v", err))
 		} else {
@@ -394,9 +439,96 @@ Code Snippet:
 		return nil, fmt.Errorf("unknown action '%s' in command arguments", args.Action)
 	}
 
-	// workspace/executeCommand usually returns null or a simple success indicator,
-	// not the result of the action itself (which was handled above).
 	return nil, nil
+}
+
+// Function to parse JSON explanation response from Ollama
+func parseExplanationResponse(response string) ([]ExplanationItem, error) {
+	// Try to extract JSON from the response (in case the model adds extra text)
+	jsonStart := strings.Index(response, "{")
+	jsonEnd := strings.LastIndex(response, "}")
+
+	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
+		return nil, fmt.Errorf("could not find valid JSON in response")
+	}
+
+	jsonStr := response[jsonStart : jsonEnd+1]
+
+	// Try to parse the JSON
+	var result ExplanationResponse
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+		return nil, fmt.Errorf("invalid JSON format: %w", err)
+	}
+
+	return result.Explanations, nil
+}
+
+// Function to create diagnostics from explanation items
+func createDiagnosticsFromExplanations(explanations []ExplanationItem, selectionRange protocol.Range) []protocol.Diagnostic {
+	diagnostics := make([]protocol.Diagnostic, 0, len(explanations))
+
+	// This is a design issue - we need the actual text content to split into lines
+	// Let's modify our approach
+
+	for _, item := range explanations {
+		// Calculate the actual line in the document
+		actualLine := int(selectionRange.Start.Line) + item.LineNumber
+
+		// Create diagnostic for this line - span the whole line
+		diagnostic := protocol.Diagnostic{
+			Range: protocol.Range{
+				Start: protocol.Position{
+					Line:      uint(actualLine),
+					Character: 0, // Start from beginning of line
+				},
+				End: protocol.Position{
+					Line:      uint(actualLine),
+					Character: 1000, // Use a large number to cover the whole line
+				},
+			},
+			Severity: protocol.SeverityInfo, // Use Info severity for explanations
+			Source:   "ollama-lsp",
+			Message:  item.Explanation,
+		}
+
+		diagnostics = append(diagnostics, diagnostic)
+	}
+
+	return diagnostics
+}
+
+// Function to send diagnostics to the client
+func sendDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, uri protocol.DocumentURI, diagnostics []protocol.Diagnostic) {
+	params := protocol.PublishDiagnosticsParams{
+		URI:         uri,
+		Diagnostics: diagnostics,
+	}
+
+	rawParams, err := json.Marshal(params)
+	if err != nil {
+		log.Printf("Error marshalling diagnostics params: %v", err)
+		return
+	}
+
+	notification := &jsonrpc2.NotificationMessage{
+		JSONRPC: jsonrpc2.Version,
+		Method:  protocol.MethodTextDocumentPublishDiagnostics,
+		Params:  rawParams,
+	}
+
+	if err := conn.Write(ctx, notification); err != nil {
+		log.Printf("Error sending diagnostics notification: %v", err)
+	} else {
+		log.Printf("Successfully sent %d diagnostics for %s", len(diagnostics), uri)
+	}
+}
+
+// OllamaActionArgs defines the structure for arguments passed to our custom command
+type OllamaActionArgs struct {
+	Action   string               `json:"action"` // "continue" or "explain"
+	URI      protocol.DocumentURI `json:"uri"`
+	Position protocol.Position    `json:"position,omitempty"` // Used for "continue"
+	Range    *protocol.Range      `json:"range,omitempty"`    // Used for "explain"
 }
 
 // applyOllamaContinuation sends a workspace/applyEdit request to insert the text.
