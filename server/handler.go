@@ -6,162 +6,217 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/akhenakh/lspgo/jsonrpc2" // Adjust import path
+	"github.com/akhenakh/lspgo/jsonrpc2"
 )
 
 // HandlerFunc defines the signature for LSP method handlers.
 // It receives context, a connection to reply/notify, and decoded params.
 // It returns a result (marshallable to JSON) or an error.
-type HandlerFunc func(ctx context.Context, conn *jsonrpc2.Conn, params json.RawMessage) (result interface{}, err error)
+// Note: This type is defined but not directly used by the reflection mechanism.
+// type HandlerFunc func(ctx context.Context, conn *jsonrpc2.Conn, params json.RawMessage) (result any, err error)
 
 // typedHandler wraps a user-provided function with strong parameter typing.
 type typedHandler struct {
-	h         interface{} // The user's function e.g. func(context.Context, *protocol.InitializeParams) (*protocol.InitializeResult, error)
+	h         any // The user's function e.g. func(context.Context, *protocol.InitializeParams) (*protocol.InitializeResult, error)
 	paramType reflect.Type
+	// Add flags to indicate expected arguments like conn
+	takesConn   bool
+	takesParams bool
 }
 
 // invoke calls the underlying user handler after decoding params.
-func (th *typedHandler) invoke(ctx context.Context, conn *jsonrpc2.Conn, params json.RawMessage) (result interface{}, err error) {
-	// Create a new pointer to the parameter type
-	paramValuePtr := reflect.New(th.paramType)
+// It now accepts conn *jsonrpc2.Conn and params json.RawMessage.
+func (h *typedHandler) invoke(ctx context.Context, conn *jsonrpc2.Conn, params json.RawMessage) (result interface{}, err error) {
+	var paramsPtr interface{} // Pointer to the params struct
 
-	// Decode params if they exist and the target type is not nil
-	if len(params) > 0 && string(params) != "null" {
-		if err := json.Unmarshal(params, paramValuePtr.Interface()); err != nil {
-			return nil, jsonrpc2.NewError(jsonrpc2.InvalidParams, fmt.Sprintf("failed to decode params: %v", err))
-		}
-	} else if th.paramType != nil {
-		// If params are required but missing/null, maybe return error? Or let handler decide?
-		// Let's allow null/empty if the type is a pointer, otherwise require non-null.
-		if th.paramType.Kind() != reflect.Ptr {
-			// Check if it's an empty struct - allow that
-			isEmptyStruct := th.paramType.Kind() == reflect.Struct && th.paramType.NumField() == 0
-			if !isEmptyStruct {
-				return nil, jsonrpc2.NewError(jsonrpc2.InvalidParams, "missing non-nullable params")
+	if h.takesParams && h.paramType != nil { // Check if parameters are defined and expected for this handler
+		paramsValue := reflect.New(h.paramType) // Create a pointer to a new value of the param type
+		paramsPtr = paramsValue.Interface()     // Get the pointer as an interface{}
+
+		// Try to unmarshal ONLY if params are present
+		if params != nil && len(params) > 0 && string(params) != "null" {
+			if err := json.Unmarshal(params, paramsPtr); err != nil {
+				// Use specific JSON-RPC error code
+				return nil, &jsonrpc2.ErrorObject{
+					Code:    jsonrpc2.InvalidParams,
+					Message: fmt.Sprintf("failed to unmarshal params: %v", err),
+				}
 			}
 		}
-		// For nil paramType or pointer types, paramValuePtr will hold the zero value (nil pointer)
+		// If params is null or missing, paramsPtr will point to the zero value struct, which is often fine.
+	} else {
+		// No parameters defined/expected, or handler signature doesn't take params.
+		// Check if the client incorrectly sent parameters when none were expected.
+		if params != nil && len(params) > 0 && string(params) != "null" {
+			// Decide whether to error or ignore. LSP often ignores extra params in notifications.
+			// For requests, returning an error might be better.
+			// Let's return an error for now if unexpected params are received by a handler that doesn't expect them.
+			if !h.takesParams {
+				return nil, &jsonrpc2.ErrorObject{
+					Code:    jsonrpc2.InvalidParams,
+					Message: "method received unexpected parameters",
+				}
+			}
+			// If h.takesParams is true but h.paramType is nil (e.g. interface{}), we might allow raw params?
+			// For now, assume paramType must be non-nil if takesParams is true.
+		}
+		// paramsPtr remains nil
 	}
 
-	// Call the user's handler function using reflection
-	hValue := reflect.ValueOf(th.h)
-	hType := hValue.Type()
+	// Call the actual handler function using reflection
+	handlerFunc := reflect.ValueOf(h.h)
+	funcType := handlerFunc.Type()
 
-	// Prepare arguments for the call
-	args := []reflect.Value{reflect.ValueOf(ctx)}
-	// Check if the handler expects the Conn argument
-	if hType.NumIn() > 1 && hType.In(1) == reflect.TypeOf((*jsonrpc2.Conn)(nil)) {
-		args = append(args, reflect.ValueOf(conn))
-		if hType.NumIn() > 2 { // Context, Conn, Params
-			args = append(args, paramValuePtr)
+	// Build arguments for the call
+	args := []reflect.Value{reflect.ValueOf(ctx)} // First arg is always context
+
+	argIndex := 1 // Current argument index in the *handler* signature
+	if h.takesConn {
+		if funcType.NumIn() <= argIndex {
+			// This indicates a mismatch between validation and handler signature, should not happen
+			return nil, fmt.Errorf("internal error: handler validated to take Conn, but signature mismatch")
 		}
-	} else if hType.NumIn() > 1 { // Context, Params
-		args = append(args, paramValuePtr)
+		args = append(args, reflect.ValueOf(conn)) // Pass the connection pointer
+		argIndex++
+	}
+
+	if h.takesParams {
+		if funcType.NumIn() <= argIndex {
+			// This indicates a mismatch between validation and handler signature, should not happen
+			return nil, fmt.Errorf("internal error: handler validated to take Params, but signature mismatch")
+		}
+		paramArgType := funcType.In(argIndex)
+		if paramsPtr != nil {
+			// Pass the unmarshalled params (or zero value pointer)
+			paramValue := reflect.ValueOf(paramsPtr) // This is reflect.Value of the *pointer*
+			// If handler expects a value type, dereference pointer.
+			// Careful: Check Kind() before Elem()
+			if paramArgType.Kind() != reflect.Ptr && paramValue.IsValid() && !paramValue.IsNil() {
+				args = append(args, paramValue.Elem())
+			} else {
+				// Pass pointer directly (or nil pointer if unmarshalling failed/no params)
+				args = append(args, paramValue)
+			}
+		} else {
+			// Pass nil or zero value if handler expects params but none were defined/sent
+			// Note: paramsPtr is nil here. We need the *type* expected by the handler.
+			args = append(args, reflect.Zero(paramArgType)) // Pass zero value for the expected type
+		}
+		argIndex++
+	}
+
+	// Check if the number of arguments matches
+	if funcType.NumIn() != len(args) {
+		return nil, fmt.Errorf("internal error: argument count mismatch calling handler. Expected %d, got %d", funcType.NumIn(), len(args))
 	}
 
 	// Call the handler
-	results := hValue.Call(args)
+	results := handlerFunc.Call(args)
 
-	// Process results
+	// Process results (assuming handler returns (result, error) or just error or just result)
 	var resErr error
-	if len(results) > 0 {
-		// The last return value is conventionally the error
-		if errVal, ok := results[len(results)-1].Interface().(error); ok {
-			resErr = errVal // Can be nil
+	var resVal interface{} // Use specific variable for result
+
+	if len(results) == 1 {
+		// Single return value: could be result or error
+		if errVal, ok := results[0].Interface().(error); ok {
+			resErr = errVal // It's an error
+		} else {
+			resVal = results[0].Interface() // It's a result
+		}
+	} else if len(results) == 2 {
+		// Two return values: assume (result, error)
+		if !results[0].IsNil() {
+			resVal = results[0].Interface()
+		}
+		if !results[1].IsNil() {
+			if errVal, ok := results[1].Interface().(error); ok {
+				resErr = errVal
+			} else {
+				// Should not happen if signature validation is correct
+				return nil, fmt.Errorf("internal error: handler returned non-error as second value")
+			}
 		}
 	}
+	// If len(results) == 0, resVal is nil, resErr is nil
 
-	if resErr != nil {
-		// Check if it's already a jsonrpc2 error
-		if _, ok := resErr.(*jsonrpc2.ErrorObject); ok {
-			return nil, resErr // Return as is
-		}
-		// Wrap other errors as internal server errors
-		// TODO: Maybe allow mapping specific Go errors to specific JSON-RPC errors
-		return nil, jsonrpc2.NewError(jsonrpc2.InternalError, resErr.Error())
-	}
-
-	// If there's a non-error result, return it (first return value)
-	if len(results) > 0 && results[0].IsValid() && !results[0].IsNil() {
-		// Check if the last value was the error we already processed
-		if len(results) > 1 || resErr == nil { // If only one return val, it must be result
-			return results[0].Interface(), nil
-		}
-	}
-
-	// No result, no error
-	return nil, nil
+	return resVal, resErr // Return result and error from the handler call
 }
 
 // Helper to validate user-provided handler function signatures.
 // Expected: func(ctx context.Context [, conn *jsonrpc2.Conn], params *protocol.SpecificParams) (result *protocol.SpecificResult, err error)
 // Variations allowed: no conn, no params, no result. Error return is optional but recommended.
-func validateHandlerFunc(h any) (reflect.Type, error) {
+// Returns paramType, takesConn, takesParams, error
+func validateHandlerFunc(h any) (paramType reflect.Type, takesConn bool, takesParams bool, err error) {
 	hType := reflect.TypeOf(h)
 	if hType.Kind() != reflect.Func {
-		return nil, fmt.Errorf("handler must be a function")
+		err = fmt.Errorf("handler must be a function")
+		return
 	}
 
 	// Check context argument
 	if hType.NumIn() < 1 || hType.In(0) != reflect.TypeOf((*context.Context)(nil)).Elem() {
-		return nil, fmt.Errorf("handler must accept context.Context as first argument")
+		err = fmt.Errorf("handler must accept context.Context as first argument")
+		return
 	}
 
-	argIndex := 1
+	expectedArgIndex := 1
 	// Check optional Conn argument
-	if hType.NumIn() > argIndex && hType.In(argIndex) == reflect.TypeOf((*jsonrpc2.Conn)(nil)) {
-		argIndex++
+	if hType.NumIn() > expectedArgIndex && hType.In(expectedArgIndex) == reflect.TypeOf((*jsonrpc2.Conn)(nil)) {
+		takesConn = true
+		expectedArgIndex++
 	}
 
 	// Check optional Params argument
-	var paramType reflect.Type
-	if hType.NumIn() > argIndex {
-		paramType = hType.In(argIndex)
-		// Params should generally be pointers to structs or specific types
-		if paramType.Kind() != reflect.Ptr && paramType.Kind() != reflect.Struct && paramType.Kind() != reflect.Interface {
-			// Allow basic types too, maybe? For now, stick to structs/pointers/interfaces
-			// Also allow nil interface for methods with no params
-			isEmptyStruct := paramType.Kind() == reflect.Struct && paramType.NumField() == 0
-			if !isEmptyStruct && paramType.Kind() != reflect.Interface {
-				// return nil, fmt.Errorf("handler param type %s should be a pointer to a struct or an interface{}", paramType)
-				// Relaxing this check for simpler types or empty structs
-			}
+	if hType.NumIn() > expectedArgIndex {
+		paramType = hType.In(expectedArgIndex)
+		// Params should generally be pointers to structs or specific types that are JSON-unmarshallable
+		// Allow structs directly (passed by value to handler), pointers, interfaces, or basic types.
+		// We need the concrete type (even if it's a pointer type) for unmarshalling.
+		// If it's a pointer, store the Elem type for reflect.New, otherwise store the type itself.
+		if paramType.Kind() == reflect.Ptr {
+			// Store the element type because reflect.New needs the base type
+			paramType = paramType.Elem()
+		} else if paramType.Kind() == reflect.Struct || paramType.Kind() == reflect.Interface || paramType.Kind() == reflect.Map || paramType.Kind() == reflect.Slice || paramType.Kind() == reflect.String || paramType.Kind() == reflect.Bool || paramType.Kind() == reflect.Int || paramType.Kind() == reflect.Uint || paramType.Kind() == reflect.Float32 || paramType.Kind() == reflect.Float64 {
+			// Keep the type as is
+		} else {
+			err = fmt.Errorf("handler param type %s must be a pointer to a struct, a struct, interface, map, slice, or basic type", paramType)
+			return
 		}
-		// If it's a struct, we actually need the pointer type for unmarshalling
-		if paramType.Kind() == reflect.Struct {
-			// Except for zero-field structs (like ShutdownParams)
-			if paramType.NumField() > 0 {
-				// paramType = reflect.PtrTo(paramType) // No, use the struct type directly, reflect.New creates pointer
-			}
-		}
-		argIndex++
+		takesParams = true
+		expectedArgIndex++
 	}
 
-	if hType.NumIn() > argIndex {
-		return nil, fmt.Errorf("handler has too many input arguments (max context, [conn], [params])")
+	if hType.NumIn() > expectedArgIndex {
+		err = fmt.Errorf("handler has too many input arguments (max context, [conn], [params])")
+		return
 	}
 
 	// Check return values (optional result, optional error)
 	if hType.NumOut() > 2 {
-		return nil, fmt.Errorf("handler has too many return values (max result, error)")
+		err = fmt.Errorf("handler has too many return values (max result, error)")
+		return
 	}
+	errorInterface := reflect.TypeOf((*error)(nil)).Elem()
 	if hType.NumOut() > 0 {
-		// Last return must be error if present
+		// Last return must be error if present and > 0 returns
 		lastReturn := hType.Out(hType.NumOut() - 1)
-		if !lastReturn.Implements(reflect.TypeOf((*error)(nil)).Elem()) {
-			// If only one return, it must be the result
+		if !lastReturn.Implements(errorInterface) {
+			// If only one return, it must be the result (not error)
 			if hType.NumOut() == 1 {
 				// OK - this is the result
 			} else {
-				return nil, fmt.Errorf("handler's last return value must be error")
+				// If two returns, the last *must* be error
+				err = fmt.Errorf("handler's last return value must be error if multiple values are returned")
+				return
 			}
 		}
 	}
+	// If hType.NumOut() == 2, first is result, second is error (validated above)
+	// If hType.NumOut() == 1, it could be result OR error (validated above)
+	// If hType.NumOut() == 0, that's fine.
+
 	// Return the detected parameter type (can be nil if no params expected)
-	// If paramType is a struct, return the struct type itself, not pointer.
-	// reflect.New will create the pointer later.
-	if paramType != nil && paramType.Kind() == reflect.Ptr {
-		return paramType.Elem(), nil // Use the element type for registration map
-	}
-	return paramType, nil // Return struct type or nil interface{} type
+	// paramType is already the base type (if it was originally a pointer) or the type itself.
+	return // Use named return values
 }

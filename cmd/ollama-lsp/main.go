@@ -144,6 +144,7 @@ func handleDidClose(ctx context.Context, params *protocol.DidCloseTextDocumentPa
 // Note: This handler needs access to `conn` to send notifications later if needed,
 // but the core logic here just returns actions. The `lspgo` handler reflection
 // supports including `conn` as the second argument.
+// handleCodeAction function modification - Add a third action
 func handleCodeAction(ctx context.Context, conn *jsonrpc2.Conn, params *protocol.CodeActionParams) ([]protocol.CodeAction, error) {
 	uri := params.TextDocument.URI
 	log.Printf("Code Action Request: %s Range: %v", uri, params.Range)
@@ -158,44 +159,61 @@ func handleCodeAction(ctx context.Context, conn *jsonrpc2.Conn, params *protocol
 
 	var actions []protocol.CodeAction
 
-	// --- Action 1: Continue ---
+	// --- Action 1: Continue --- (unchanged)
 	continueArgs := OllamaActionArgs{
 		Action:   "continue",
 		URI:      uri,
-		Position: params.Range.Start, // Use the start of the selection/cursor pos
+		Position: params.Range.Start,
 	}
-	continueCmdArgs, _ := json.Marshal(continueArgs) // Error handling omitted for brevity
+	continueCmdArgs, _ := json.Marshal(continueArgs)
 
 	actions = append(actions, protocol.CodeAction{
 		Title: "Ollama: Continue...",
-		Kind:  protocol.RefactorInline, // Or another relevant kind
+		Kind:  protocol.RefactorInline,
 		Command: &protocol.Command{
 			Title:     "Ollama: Continue...",
-			Command:   "ollama/executeAction",             // Must match the command registered in main()
-			Arguments: []json.RawMessage{continueCmdArgs}, // Pass structured args
+			Command:   "ollama/executeAction",
+			Arguments: []json.RawMessage{continueCmdArgs},
 		},
 	})
 
 	// --- Action 2: Explain Selection ---
-	// Only show if there is a selection (start != end)
 	if params.Range.Start != params.Range.End {
 		explainArgs := OllamaActionArgs{
 			Action: "explain",
 			URI:    uri,
-			Range:  &params.Range, // Pass the selection range
+			Range:  &params.Range,
 		}
-		explainCmdArgs, _ := json.Marshal(explainArgs) // Error handling omitted for brevity
+		explainCmdArgs, _ := json.Marshal(explainArgs)
 
 		actions = append(actions, protocol.CodeAction{
 			Title: "Ollama: Explain selection...",
 			Kind:  protocol.RefactorInline,
 			Command: &protocol.Command{
 				Title:     "Ollama: Explain selection...",
-				Command:   "ollama/executeAction",            // Must match the command registered in main()
-				Arguments: []json.RawMessage{explainCmdArgs}, // Pass structured args
+				Command:   "ollama/executeAction",
+				Arguments: []json.RawMessage{explainCmdArgs},
 			},
 		})
 	}
+
+	// --- Action 3: Prompt (Current Line) ---
+	promptArgs := OllamaActionArgs{
+		Action:   "prompt",
+		URI:      uri,
+		Position: params.Range.Start,
+	}
+	promptCmdArgs, _ := json.Marshal(promptArgs)
+
+	actions = append(actions, protocol.CodeAction{
+		Title: "Ollama: Use current line as prompt...",
+		Kind:  protocol.Source, // Different kind for this action
+		Command: &protocol.Command{
+			Title:     "Ollama: Use current line as prompt...",
+			Command:   "ollama/executeAction",
+			Arguments: []json.RawMessage{promptCmdArgs},
+		},
+	})
 
 	log.Printf("Offering %d code actions for %s", len(actions), uri)
 	return actions, nil
@@ -277,6 +295,43 @@ Code/Text Snippet:
 
 Explanation:`, selectedText)
 
+	case "prompt":
+		// Get current line text
+		lineNum := args.Position.Line
+
+		currentLine, err := getCurrentLine(content, lineNum)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to get current line: %v", err)
+			log.Println(errMsg)
+			showNotification(ctx, conn, protocol.Error, errMsg)
+			return nil, nil
+		}
+
+		currentLine = strings.TrimSpace(currentLine) // Trim whitespace for cleaner instructions
+
+		// Get text before the current line
+		textBeforeCursor := getTextBeforePosition(content, protocol.Position{
+			Line:      lineNum,
+			Character: 0,
+		})
+		// Remove potential trailing newline from textBeforeCursor for cleaner prompt formatting
+		textBeforeCursor = strings.TrimSuffix(textBeforeCursor, "\n")
+
+		if currentLine == "" { // Check after trimming
+			showNotification(ctx, conn, protocol.Warning, "Current line is empty. Please type a prompt/instruction first.")
+			return nil, nil
+		}
+
+		prompt = fmt.Sprintf(`You are an expert coding assistant. Continue the following code snippet directly without any preamble or explanation.
+Respond ONLY with the code that should come next. %s.
+
+Code Snippet:
+%s`, currentLine, textBeforeCursor) // Use the improved prompt
+
+		// Show "Thinking..." message
+		showNotification(ctx, conn, protocol.Info, fmt.Sprintf("Ollama processing prompt: %s",
+			currentLine[:min(30, len(currentLine))]+strings.Repeat(".", min(3, 30-min(30, len(currentLine))))))
+
 	default:
 		return nil, fmt.Errorf("unknown action '%s' in command arguments", args.Action)
 	}
@@ -295,7 +350,7 @@ Explanation:`, selectedText)
 	// --- Apply Result Based on Action ---
 	switch args.Action {
 	case "continue":
-		// *** Apply the result as a workspace edit ***
+		// Apply the result as a workspace edit
 		err = applyOllamaContinuation(ctx, conn, args.URI, docVersion, args.Position, ollamaResult)
 		if err != nil {
 			// Log error, maybe notify user
@@ -304,13 +359,39 @@ Explanation:`, selectedText)
 		} else {
 			log.Printf("Successfully requested 'workspace/applyEdit' for continuation")
 			// Maybe show a brief success notification? Optional.
-			// showNotification(ctx, conn, protocol.Info, "Ollama continuation applied.")
+			showNotification(ctx, conn, protocol.Info, "Ollama continuation applied.")
 		}
 
 	case "explain":
 		// *** For explain, still show the result in a message window ***
 		messageToShow := fmt.Sprintf("Ollama Explanation:\n---\n%s\n---", ollamaResult) // Add separators
 		showNotification(ctx, conn, protocol.Info, messageToShow)
+
+	case "prompt":
+		lineNum := args.Position.Line
+		// Apply the result as a workspace edit, replacing the current line
+		// We need the original line text with original indentation/whitespace for replacement range calculation.
+		originalLine, err := getCurrentLine(content, lineNum) // Get the original line again
+		if err != nil {
+			// This shouldn't happen if the first call succeeded, but handle defensively
+			errMsg := fmt.Sprintf("Failed to get original current line for replacement: %v", err)
+			log.Println(errMsg)
+			showNotification(ctx, conn, protocol.Error, errMsg)
+			return nil, nil
+		}
+
+		err = applyOllamaLineReplacement(ctx, conn, args.URI, docVersion, lineNum, originalLine, ollamaResult) // Use originalLine here
+		if err != nil {
+			// Log error, notify user
+			log.Printf("Error applying Ollama line replacement: %v", err)
+			showNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to apply edit: %v", err))
+		} else {
+			log.Printf("Successfully requested 'workspace/applyEdit' for line replacement")
+			showNotification(ctx, conn, protocol.Info, "Ollama prompt result applied.")
+		}
+
+	default:
+		return nil, fmt.Errorf("unknown action '%s' in command arguments", args.Action)
 	}
 
 	// workspace/executeCommand usually returns null or a simple success indicator,
@@ -403,8 +484,6 @@ func cleanOllamaCodeResult(rawResult string) string {
 	}
 	return strings.TrimSpace(trimmed) // Trim again after removing fences
 }
-
-// --- Ollama Interaction ---
 
 type ollamaRequest struct {
 	Model  string `json:"model"`
@@ -556,6 +635,86 @@ func getTextInRange(content string, rng protocol.Range) (string, error) {
 	}
 
 	return builder.String(), nil
+}
+
+// getTextAtLine extracts the text at the specified line number.
+func getTextAtLine(content string, lineNum uint) (string, uint, error) {
+	lines := strings.Split(content, "\n")
+	if int(lineNum) >= len(lines) {
+		return "", lineNum, fmt.Errorf("line number %d is out of bounds (0-%d)", lineNum, len(lines)-1)
+	}
+
+	return lines[lineNum], lineNum, nil
+}
+
+// getCurrentLine extracts the text at the specified line number.
+func getCurrentLine(content string, lineNum uint) (string, error) {
+	lines := strings.Split(content, "\n")
+	if int(lineNum) >= len(lines) {
+		return "", fmt.Errorf("line number %d is out of bounds (0-%d)", lineNum, len(lines)-1)
+	}
+	return lines[lineNum], nil
+}
+
+// applyOllamaLineReplacement sends a workspace/applyEdit request to replace a line with new text.
+func applyOllamaLineReplacement(ctx context.Context, conn *jsonrpc2.Conn, uri protocol.DocumentURI, version int,
+	lineNum uint, oldLine string, textToInsert string) error {
+
+	// Clean up the result - Ollama might add backticks or language hints
+	textToInsert = cleanOllamaCodeResult(textToInsert)
+	if textToInsert == "" {
+		log.Println("Ollama returned empty result after cleaning, not applying edit.")
+		return nil
+	}
+
+	// Create the TextEdit to replace the entire line
+	edit := protocol.TextEdit{
+		Range: protocol.Range{
+			Start: protocol.Position{Line: lineNum, Character: 0},
+			End:   protocol.Position{Line: lineNum, Character: uint(len(oldLine))},
+		},
+		NewText: textToInsert,
+	}
+
+	// Create the document edit
+	docEdit := protocol.TextDocumentEdit{
+		TextDocument: protocol.VersionedTextDocumentIdentifier{
+			TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: uri},
+			Version:                version,
+		},
+		Edits: []protocol.TextEdit{edit},
+	}
+
+	// Create the WorkspaceEdit
+	workspaceEdit := protocol.WorkspaceEdit{
+		DocumentChanges: []protocol.TextDocumentEdit{docEdit},
+	}
+
+	// Create ApplyWorkspaceEditParams
+	applyParams := protocol.ApplyWorkspaceEditParams{
+		Label: "Ollama Prompt Response",
+		Edit:  workspaceEdit,
+	}
+
+	// Marshal and send the request
+	rawParams, err := json.Marshal(applyParams)
+	if err != nil {
+		return fmt.Errorf("failed to marshal applyEdit params: %w", err)
+	}
+
+	request := &jsonrpc2.RequestMessage{
+		JSONRPC: jsonrpc2.Version,
+		ID:      getNextRequestID(),
+		Method:  protocol.MethodWorkspaceApplyEdit,
+		Params:  rawParams,
+	}
+
+	log.Printf("<-- Request (to client): Method=%s, ID=%s", request.Method, string(request.ID))
+	if err := conn.Write(ctx, request); err != nil {
+		return fmt.Errorf("failed to send workspace/applyEdit request: %w", err)
+	}
+
+	return nil
 }
 
 // --- LSP Notification Helper ---

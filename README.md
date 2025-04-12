@@ -1,33 +1,9 @@
 ## Example
 
-let's create the minimal example and show how to integrate it with Helix.
 
-The code you provided is already a very good starting point for a minimal LSP server. The `lspgo/main.go` file essentially *is* the server executable's main logic.
-
-**1. The LSP Server Code (Using Your Provided Code)**
+**1. The LSP Server Code **
 
 We'll use the exact code you provided. Ensure the files are structured correctly in your Go project:
-
-```
-your-project-root/
-├── go.mod
-├── go.sum
-└── lspgo/
-    ├── main.go             # Server entry point
-    ├── jsonrpc2/
-    │   ├── conn.go
-    │   ├── jsonrpc2.go
-    │   └── stream.go
-    ├── protocol/
-    │   ├── document.go
-    │   ├── general.go
-    │   ├── hover.go
-    │   └── types.go
-    └── server/
-        ├── handler.go
-        ├── options.go
-        └── server.go
-```
 
 Make sure you have the necessary `go.mod` file. If you don't, run `go mod init your-project-root` (replace `your-project-root` with your actual project module path) and then `go mod tidy` in the `your-project-root` directory.
 
