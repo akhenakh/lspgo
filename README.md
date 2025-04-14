@@ -1,28 +1,26 @@
-## Example
+## lspgo
 
+LSPGo contains a library to build language servers.
 
-**1. The LSP Server Code **
+It contains two working language servers:
 
-We'll use the exact code you provided. Ensure the files are structured correctly in your Go project:
+*   `ollama-lsp`: A language server for the Ollama language model.
+*   `languagetool-server`: A language server for the Languagetool API.
 
-Make sure you have the necessary `go.mod` file. If you don't, run `go mod init your-project-root` (replace `your-project-root` with your actual project module path) and then `go mod tidy` in the `your-project-root` directory.
+## Usage
 
-**2. Build the LSP Server**
-
-Navigate to the directory containing `lspgo/main.go` (which is `your-project-root/lspgo` in the structure above) or just the project root, and build the executable:
+**1. Build the Ollama LSP Server**
 
 ```bash
-# Navigate to your project root
-cd /path/to/your-project-root
-
-# Build the server executable (output name will be 'lspgo' or 'lspgo.exe')
 # Place the output in the root for easier access, or choose another location.
-go build -o lspgo-server ./lspgo
+go build -o ollama-lsp ./cmd/ollama-lsp
 ```
 
 This will create an executable file named `lspgo-server` in your project's root directory (or wherever your current directory is when you run `go build`). Make sure this file is executable (`chmod +x lspgo-server` on Linux/macOS if needed).
 
-**3. Configure Helix**
+**2. Configure your editor**
+
+The following is an example for [Helix](https://helix-editor.com/) editor, but it works for any editors that support LSPs.
 
 Helix uses a configuration file, typically `languages.toml`, to define how to interact with language servers.
 
@@ -33,11 +31,13 @@ Helix uses a configuration file, typically `languages.toml`, to define how to in
 *   **Edit or Create `languages.toml`:** Inside that directory, find or create the `languages.toml` file.
 *   **Add a Language Entry:** Add the following configuration block to `languages.toml`. We'll define a new dummy language `mylang` associated with files ending in `.mylang` to test our server.
 
+Here is an example of how to configure Helix to use the `ollama-lsp` server on language named mylang:
+
 ```toml
 # ~/.config/helix/languages.toml
 
 [language-server.lspgo]
-command = "/home/akh/dev/lspgo/lspgo"
+command = "/home/user/lspgo/cmd/demo-lsp"
 
 [[language]]
 name = "mylang" # Choose a name for your language
@@ -49,17 +49,12 @@ indent = { tab-width = 4, unit = "    " } # Optional: Define indentation
 
 # --- LSP Configuration ---
 # Adjust the 'command' path to point to your actual built executable!
-language-servers = ["lspgo"]
-
-
-
-# Optional: You can pass command-line arguments if your server needs them
-# language-server = { command = "/path/to/lspgo-server", args = ["--log-file", "/tmp/lsp.log"] }
+language-servers = ["ollama-lsp"]
 ```
 
-**Crucial Step:** Replace `/full/path/to/your/lspgo-server` with the *actual, absolute path* to the `lspgo-server` executable you built in step 2. Relative paths might work but absolute paths are generally more reliable.
+**Crucial Step:** Replace `/home/user/lspgo/cmd/demo-lsp` with the *actual, absolute path* to the `lspgo-server` executable you built in step 2. Relative paths might work but absolute paths are generally more reliable.
 
-**4. Test with Helix**
+## Test Your LSP
 
 1.  **Create a Test File:** Create a file named `test.mylang` anywhere on your system:
     ```
@@ -104,11 +99,3 @@ language-servers = ["lspgo"]
     *   `lsp: server.go:NNN: Handling exit notification.`
     *   `lsp: server.go:NNN: Exiting process with code 0.`
     *   `lsp: server.go:NNN: Server stopped.` (This might appear just before the process exits).
-
-**Summary**
-
-You now have:
-
-1.  A compiled LSP server (`lspgo-server`) built from the provided Go code.
-2.  Helix configured (`languages.toml`) to launch this server for files with the `.mylang` extension.
-3.  A way to test the basic LSP interactions (open, change, hover) between Helix and your server by editing a `.mylang` file and observing the server logs and the hover popup in Helix.
