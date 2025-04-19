@@ -16,12 +16,14 @@ It contains two working language servers implementations:
 
 ## Usage
 
-**1. Build the Ollama LSP Server**
+**1. Build or Install the LSP Servers**
 
 ```bash
 go build -o ollama-lsp ./cmd/ollama-lsp
 go build -o languagetool-lsp ./cmd/languagetool-lsp
 ```
+
+Or go to the [Github release page](https://github.com/akhenakh/lspgo/releases)
 
 **2. Configure your editor**
 
