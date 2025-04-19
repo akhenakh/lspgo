@@ -49,12 +49,12 @@ command = "languagetool-lsp"
 
 To add the ollama-lsp server and associate it with the Go language:
 ```toml
-[language-server.languagetool-lsp]
-command = "languagetool-lsp"
+[language-server.ollama-lsp]
+command = "ollama-lsp"
 
 [[language]]
 name = "go"
-language-servers = ["gopls","languagetool-lsp"]
+language-servers = ["gopls","ollama-lsp"]
 ```
 In helix you can then trigger the action using `space+a`.
 
