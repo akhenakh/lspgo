@@ -32,6 +32,7 @@ Code Snippet:
 
 	log.Printf("Ollama response received for action 'continue'")
 
+	// Apply the continuation edit
 	err = applyOllamaContinuation(ctx, conn, args.URI, docVersion, args.Position, ollamaResult)
 	if err != nil {
 		log.Printf("Error applying Ollama continuation edit: %v", err)
@@ -168,17 +169,31 @@ func executePromptAction(ctx context.Context, conn *jsonrpc2.Conn, args OllamaAc
 		return nil // User action needed, not an error
 	}
 
+	// --- Get context *before* the instruction line ---
+	// Use Character: 0 to get everything before the start of the line
 	textBeforePromptLine := getTextBeforePosition(content, protocol.Position{Line: lineNum, Character: 0})
+	// Remove the trailing newline that getTextBeforePosition might include from the previous line
 	textBeforePromptLine = strings.TrimSuffix(textBeforePromptLine, "\n")
+	// Ensure the context we check against later doesn't have leading/trailing whitespace issues
+	trimmedContextForPrompt := strings.TrimSpace(textBeforePromptLine)
+	// Use the potentially whitespace-preserved version in the prompt itself if needed,
+	// but use the trimmed one for comparison later. Let's use the original in the prompt.
+	// Note: Sending a lot of whitespace context might confuse the model less than trimmed.
 
-	prompt := fmt.Sprintf(`You are an expert coding assistant. Use the INSTRUCTION below to modify or generate code based on the CODE SNIPPET.
-Respond ONLY with the resulting code, without any preamble or explanation.
+	// Explicitly tell the model to ONLY generate the replacement for the instruction line
+	// and NOT to repeat the context snippet.
+	prompt := fmt.Sprintf(`You are an expert coding assistant. You are given an INSTRUCTION on a specific line in a file, and the CODE SNIPPET that comes *before* that instruction line.
+Your task is to generate the code that should *replace* the INSTRUCTION line itself, based on the INSTRUCTION and using the CODE SNIPPET for context if needed.
 
-INSTRUCTION:
+Respond ONLY with the code meant for replacement.
+Do NOT repeat any part of the original CODE SNIPPET in your output.
+Do NOT add any preamble, explanation, markdown formatting, or comments about your process.
+
+INSTRUCTION (This line will be replaced by your output):
 %s
 
-CODE SNIPPET (Code before the instruction line):
-%s`, trimmedCurrentLine, textBeforePromptLine)
+CODE SNIPPET (Context only - DO NOT INCLUDE THIS IN YOUR RESPONSE):
+%s`, trimmedCurrentLine, textBeforePromptLine) // Send original context
 
 	protocol.ShowNotification(ctx, conn, protocol.Info, fmt.Sprintf("Ollama processing prompt: %s...",
 		trimmedCurrentLine[:min(30, len(trimmedCurrentLine))]))
@@ -191,12 +206,59 @@ CODE SNIPPET (Code before the instruction line):
 		return nil // Error handled via notification
 	}
 
-	log.Printf("Ollama response received for action 'prompt'")
+	log.Printf("Ollama response received for action 'prompt'. Raw length: %d", len(ollamaResult))
+
+	// --- Clean the result and remove potential context prefix ---
+	cleanedResult := cleanOllamaCodeResult(ollamaResult) // Remove markdown, trim space
+	log.Printf("Ollama response after initial cleaning. Length: %d", len(cleanedResult))
+
+	finalReplacementText := cleanedResult // Start with the initially cleaned result
+
+	// Check if the cleaned result starts with the context we sent (use the trimmed context for comparison)
+	// Only attempt removal if the context isn't empty
+	if len(trimmedContextForPrompt) > 0 {
+		// Normalize the start of the cleaned result for comparison too
+		trimmedResultStart := strings.TrimSpace(cleanedResult)
+
+		if strings.HasPrefix(trimmedResultStart, trimmedContextForPrompt) {
+			log.Printf("Attempting to remove potential context prefix from Ollama response.")
+
+			// Find the *actual* text to remove from the *original* cleanedResult.
+			// This is tricky because of potential whitespace differences.
+			// Let's try removing the length of the matched trimmed context from the
+			// beginning of the cleanedResult, AFTER trimming leading whitespace from it.
+			// This assumes the generated code starts immediately after the context (possibly with whitespace).
+
+			tempTrimmedResult := strings.TrimSpace(cleanedResult)
+			if len(tempTrimmedResult) >= len(trimmedContextForPrompt) {
+				potentialCodeStart := tempTrimmedResult[len(trimmedContextForPrompt):]
+				// Now, find where this potential code start appears in the original cleanedResult
+				// to preserve leading whitespace before the *actual* generated code.
+				index := strings.Index(cleanedResult, potentialCodeStart)
+				if index != -1 {
+					finalReplacementText = cleanedResult[index:]
+					log.Printf("Removed suspected context prefix. Final text length: %d", len(finalReplacementText))
+				} else {
+					// Fallback or warning: Couldn't reliably find the start after context
+					log.Printf("Warning: Detected context prefix but couldn't reliably isolate generated code. Using potentially prefixed result.")
+					// Keep finalReplacementText as cleanedResult in this uncertain case
+				}
+			} else {
+				log.Printf("Warning: Result shorter than context after trimming, cannot remove prefix.")
+			}
+		} else {
+			log.Printf("No context prefix detected in Ollama response based on trimmed comparison.")
+		}
+	}
+
+	// Final trim space just in case the removal left some
+	finalReplacementText = strings.TrimSpace(finalReplacementText)
 
 	// Pass the original line content (including whitespace, but without trailing newline) for replacement calculation
 	originalLineForReplacement, _ := getCurrentLine(content, lineNum) // We already checked for error above
 
-	err = applyOllamaLineReplacement(ctx, conn, args.URI, docVersion, lineNum, originalLineForReplacement, ollamaResult)
+	// Apply the line replacement edit using the potentially context-stripped result
+	err = applyOllamaLineReplacement(ctx, conn, args.URI, docVersion, lineNum, originalLineForReplacement, finalReplacementText)
 	if err != nil {
 		log.Printf("Error applying Ollama line replacement: %v", err)
 		protocol.ShowNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to apply edit: %v", err))
