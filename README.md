@@ -2,21 +2,26 @@
 
 LSPGo contains a library to build language servers.
 
-It contains two working language servers:
+It contains two working language servers implementations:
 
-*   `ollama-lsp`: A language server for the Ollama language model.
-*   `languagetool-server`: A language server for the Languagetool API.
+*   `ollama-lsp`: A language server for the [Ollama](https://ollama.com/) language model.
+    Ollama-LSP can be configured using the `OLLAMA_HOST` and `OLLAMA_MODEL` environment variables.
+    It provides three actions:
+    - Continue
+    - Use the selection as a prompt.
+    - Explain the selection.
+    ![Ollama LSP Example](img/ollama-lsp.jpg)
+*   `languagetool-lsp`: A language server for the [Languagetool API](https://languagetool.org/dev).
+    ![Languagetool LSP Example](img/languagetool-lsp.jpg)
 
 ## Usage
 
 **1. Build the Ollama LSP Server**
 
 ```bash
-# Place the output in the root for easier access, or choose another location.
 go build -o ollama-lsp ./cmd/ollama-lsp
+go build -o languagetool-lsp ./cmd/languagetool-lsp
 ```
-
-This will create an executable file named `lspgo-server` in your project's root directory (or wherever your current directory is when you run `go build`). Make sure this file is executable (`chmod +x lspgo-server` on Linux/macOS if needed).
 
 **2. Configure your editor**
 
@@ -29,15 +34,49 @@ Helix uses a configuration file, typically `languages.toml`, to define how to in
     *   macOS: `~/Library/Application Support/helix/`
     *   Windows: `%AppData%\helix\`
 *   **Edit or Create `languages.toml`:** Inside that directory, find or create the `languages.toml` file.
-*   **Add a Language Entry:** Add the following configuration block to `languages.toml`. We'll define a new dummy language `mylang` associated with files ending in `.mylang` to test our server.
 
-Here is an example of how to configure Helix to use the `ollama-lsp` server on language named mylang:
+Add boths servers, commands needs to be in your PATH.
 
 ```toml
-# ~/.config/helix/languages.toml
+[language-server.ollama-lsp]
+command = "ollama-lsp"
 
-[language-server.lspgo]
-command = "/home/user/lspgo/cmd/demo-lsp"
+[language-server.languagetool-lsp]
+command = "languagetool-lsp"
+```
+
+To add the ollama-lsp server and associate it with the Go language:
+```toml
+[language-server.languagetool-lsp]
+command = "languagetool-lsp"
+
+[[language]]
+name = "go"
+language-servers = ["gopls","languagetool-lsp"]
+```
+In helix you can then trigger the action using `space+a`.
+
+To add the languagetool-lsp server and associate it with the markdown language:
+
+```toml
+[language-server.languagetool-lsp]
+command = "languagetool-lsp"
+
+[[language]]
+name = "markdown"
+language-servers = ["languagetool-lsp"]
+```
+
+## Using the library
+
+To use the library and implement your own LSP, look at the `cmd/demo-lsp/main.go`.
+
+Register the demo-lsp in your editor:
+
+```toml
+[language-server.demo-lsp]
+command = "demo-lsp"
+
 
 [[language]]
 name = "mylang" # Choose a name for your language
@@ -46,56 +85,9 @@ file-types = ["mylang"] # Associate with files ending in '.mylang'
 roots = [] # Optional: Define project root markers if needed
 comment-token = "#" # Optional: Define comment style
 indent = { tab-width = 4, unit = "    " } # Optional: Define indentation
-
-# --- LSP Configuration ---
-# Adjust the 'command' path to point to your actual built executable!
-language-servers = ["ollama-lsp"]
+language-servers = ["demo-lsp"]
 ```
 
-**Crucial Step:** Replace `/home/user/lspgo/cmd/demo-lsp` with the *actual, absolute path* to the `lspgo-server` executable you built in step 2. Relative paths might work but absolute paths are generally more reliable.
+## Author
 
-## Test Your LSP
-
-1.  **Create a Test File:** Create a file named `test.mylang` anywhere on your system:
-    ```
-    # test.mylang
-    This is a test file for mylang.
-
-    Let's try hovering over this line.
-    Or editing this content.
-    ```
-
-2.  **Launch Helix:** Open this file with Helix from your terminal:
-    ```bash
-    hx test.mylang
-    ```
-
-3.  **Observe Server Logs:**
-    *   Since the example server logs to `stderr` by default, you *might* see log messages directly in the terminal where you launched Helix, especially the initial "Starting LSP server..." message.
-    *   Alternatively, open the Helix log buffer within Helix using the command `:log-open` (type `:log-open` and press Enter). You should see messages like:
-        *   `lsp: server.go:NNN: Handling initialize request...`
-        *   `lsp: server.go:NNN: Initialize successful, waiting for 'initialized' notification.`
-        *   `lsp: server.go:NNN: Server transitioned to running state.`
-        *   `lsp: main.go:NNN: Document Opened: file:///path/to/your/test.mylang ...`
-
-4.  **Test Features:**
-    *   **DidOpen:** When you open the file, the server should log the "Document Opened" message (check the Helix log or your terminal).
-    *   **DidChange:** Type some characters in the file. The server should log "Document Changed" messages, including "Full content change" because we configured `SyncFull`.
-    *   **Hover:** Move your cursor over some text and use Helix's hover keybinding (often `Space` + `k` in normal mode, check your Helix keybindings). You should see a hover popup appear containing the dummy Markdown content generated by `handleHover` in `main.go`:
-        ```markdown
-        ## Hover Info
-
-        Document: `file:///path/to/your/test.mylang`
-        Position: Line X, Char Y
-
-        *Provide real information here!*
-        ```
-        Simultaneously, the server log should show a "Hover Request" message.
-
-5.  **Shutdown/Exit:** When you quit Helix (e.g., `:q!`), Helix will send `shutdown` and `exit` requests. The server logs should show:
-    *   `lsp: server.go:NNN: Handling shutdown request...`
-    *   `lsp: server.go:NNN: Waiting for pending requests to complete...`
-    *   `lsp: server.go:NNN: All pending requests completed.`
-    *   `lsp: server.go:NNN: Handling exit notification.`
-    *   `lsp: server.go:NNN: Exiting process with code 0.`
-    *   `lsp: server.go:NNN: Server stopped.` (This might appear just before the process exits).
+Most of the code was written by Gemini 2.5 Exp.
