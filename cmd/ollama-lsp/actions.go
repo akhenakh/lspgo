@@ -26,7 +26,7 @@ Code Snippet:
 	if err != nil {
 		errMsg := fmt.Sprintf("Ollama 'continue' request failed: %v", err)
 		log.Println(errMsg)
-		showNotification(ctx, conn, protocol.Error, errMsg)
+		protocol.ShowNotification(ctx, conn, protocol.Error, errMsg)
 		return nil // Error handled via notification
 	}
 
@@ -35,10 +35,10 @@ Code Snippet:
 	err = applyOllamaContinuation(ctx, conn, args.URI, docVersion, args.Position, ollamaResult)
 	if err != nil {
 		log.Printf("Error applying Ollama continuation edit: %v", err)
-		showNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to apply edit: %v", err))
+		protocol.ShowNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to apply edit: %v", err))
 	} else {
 		log.Printf("Successfully requested 'workspace/applyEdit' for continuation")
-		showNotification(ctx, conn, protocol.Info, "Ollama continuation applied.")
+		protocol.ShowNotification(ctx, conn, protocol.Info, "Ollama continuation applied.")
 	}
 	return nil // Edit application outcome handled via notification
 }
@@ -51,7 +51,7 @@ func executeExplainAction(ctx context.Context, conn *jsonrpc2.Conn, args OllamaA
 	if args.Range == nil {
 		// This should ideally be caught by client-side validation or codeAction logic
 		log.Println("Error: Range is nil for 'explain' action")
-		showNotification(ctx, conn, protocol.Error, "Internal error: Missing range for explain action.")
+		protocol.ShowNotification(ctx, conn, protocol.Error, "Internal error: Missing range for explain action.")
 		return fmt.Errorf("range is required for 'explain' action") // Return internal error
 	}
 
@@ -59,11 +59,11 @@ func executeExplainAction(ctx context.Context, conn *jsonrpc2.Conn, args OllamaA
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to get text in range for 'explain': %v", err)
 		log.Println(errMsg)
-		showNotification(ctx, conn, protocol.Error, errMsg)
+		protocol.ShowNotification(ctx, conn, protocol.Error, errMsg)
 		return fmt.Errorf("failed to get text in range for 'explain': %w", err) // Return internal error
 	}
 	if selectedText == "" {
-		showNotification(ctx, conn, protocol.Warning, "No text selected for 'explain'.")
+		protocol.ShowNotification(ctx, conn, protocol.Warning, "No text selected for 'explain'.")
 		return nil // User action needed, not an error
 	}
 
@@ -93,7 +93,7 @@ Selected Code with Line Numbers:
 	if err != nil {
 		errMsg := fmt.Sprintf("Ollama 'explain' request failed: %v", err)
 		log.Println(errMsg)
-		showNotification(ctx, conn, protocol.Error, errMsg)
+		protocol.ShowNotification(ctx, conn, protocol.Error, errMsg)
 		return nil // Error handled via notification
 	}
 
@@ -106,10 +106,10 @@ Selected Code with Line Numbers:
 		if len(strings.TrimSpace(ollamaResult)) > 0 && !strings.Contains(ollamaResult, `"explanations"`) {
 			log.Printf("Explanation response did not contain expected JSON, showing raw response.")
 			messageToShow := fmt.Sprintf("Ollama Explanation:\n---\n%s\n---", ollamaResult)
-			showNotification(ctx, conn, protocol.Info, messageToShow)
+			protocol.ShowNotification(ctx, conn, protocol.Info, messageToShow)
 		} else {
 			// Proper JSON parsing error
-			showNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to parse explanation: %v. Raw response:\n%s", err, ollamaResult))
+			protocol.ShowNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to parse explanation: %v. Raw response:\n%s", err, ollamaResult))
 		}
 		return nil // Parsing failure handled via notification
 	}
@@ -142,9 +142,9 @@ Selected Code with Line Numbers:
 	}
 
 	// Publish diagnostics to the editor
-	sendDiagnostics(ctx, conn, args.URI, diagnostics)
+	protocol.SendDiagnostics(ctx, conn, args.URI, diagnostics)
 
-	showNotification(ctx, conn, protocol.Info, fmt.Sprintf("Explanation published %d diagnostics in editor", len(diagnostics)))
+	protocol.ShowNotification(ctx, conn, protocol.Info, fmt.Sprintf("Explanation published %d diagnostics in editor", len(diagnostics)))
 	return nil // Diagnostics published successfully
 }
 
@@ -158,13 +158,13 @@ func executePromptAction(ctx context.Context, conn *jsonrpc2.Conn, args OllamaAc
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to get current line %d: %v", lineNum, err)
 		log.Println(errMsg)
-		showNotification(ctx, conn, protocol.Error, errMsg)
+		protocol.ShowNotification(ctx, conn, protocol.Error, errMsg)
 		return fmt.Errorf("failed to get current line %d: %w", lineNum, err) // Return internal error
 	}
 
 	trimmedCurrentLine := strings.TrimSpace(currentLine)
 	if trimmedCurrentLine == "" {
-		showNotification(ctx, conn, protocol.Warning, "Current line is empty. Please type a prompt/instruction first.")
+		protocol.ShowNotification(ctx, conn, protocol.Warning, "Current line is empty. Please type a prompt/instruction first.")
 		return nil // User action needed, not an error
 	}
 
@@ -180,14 +180,14 @@ INSTRUCTION:
 CODE SNIPPET (Code before the instruction line):
 %s`, trimmedCurrentLine, textBeforePromptLine)
 
-	showNotification(ctx, conn, protocol.Info, fmt.Sprintf("Ollama processing prompt: %s...",
+	protocol.ShowNotification(ctx, conn, protocol.Info, fmt.Sprintf("Ollama processing prompt: %s...",
 		trimmedCurrentLine[:min(30, len(trimmedCurrentLine))]))
 
 	ollamaResult, err := callOllama(ctx, prompt)
 	if err != nil {
 		errMsg := fmt.Sprintf("Ollama 'prompt' request failed: %v", err)
 		log.Println(errMsg)
-		showNotification(ctx, conn, protocol.Error, errMsg)
+		protocol.ShowNotification(ctx, conn, protocol.Error, errMsg)
 		return nil // Error handled via notification
 	}
 
@@ -199,10 +199,10 @@ CODE SNIPPET (Code before the instruction line):
 	err = applyOllamaLineReplacement(ctx, conn, args.URI, docVersion, lineNum, originalLineForReplacement, ollamaResult)
 	if err != nil {
 		log.Printf("Error applying Ollama line replacement: %v", err)
-		showNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to apply edit: %v", err))
+		protocol.ShowNotification(ctx, conn, protocol.Error, fmt.Sprintf("Failed to apply edit: %v", err))
 	} else {
 		log.Printf("Successfully requested 'workspace/applyEdit' for line replacement")
-		showNotification(ctx, conn, protocol.Info, "Ollama prompt result applied.")
+		protocol.ShowNotification(ctx, conn, protocol.Info, "Ollama prompt result applied.")
 	}
 	return nil // Edit application outcome handled via notification
 }

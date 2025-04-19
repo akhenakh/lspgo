@@ -81,34 +81,6 @@ type ExplanationResponse struct {
 	Explanations []ExplanationItem `json:"explanations"`
 }
 
-// Function to send diagnostics to the client
-func sendDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, uri protocol.DocumentURI, diagnostics []protocol.Diagnostic) {
-	params := protocol.PublishDiagnosticsParams{
-		URI:         uri,
-		Diagnostics: diagnostics,
-		// Optionally include version if client supports it and it helps avoid race conditions
-		// Version: docVersion, // Need to pass docVersion down or retrieve it here
-	}
-
-	rawParams, err := json.Marshal(params)
-	if err != nil {
-		log.Printf("Error marshalling diagnostics params: %v", err)
-		return
-	}
-
-	notification := &jsonrpc2.NotificationMessage{
-		JSONRPC: jsonrpc2.Version,
-		Method:  protocol.MethodTextDocumentPublishDiagnostics,
-		Params:  rawParams,
-	}
-
-	log.Printf("<-- Notification: Method=%s, URI=%s, Diagnostics=%d",
-		notification.Method, uri, len(diagnostics))
-	if err := conn.Write(ctx, notification); err != nil {
-		log.Printf("Error sending diagnostics notification: %v", err)
-	}
-}
-
 // sendApplyEditRequest sends the workspace/applyEdit request to the client.
 func sendApplyEditRequest(ctx context.Context, conn *jsonrpc2.Conn, label string, edit protocol.WorkspaceEdit) error {
 	applyParams := protocol.ApplyWorkspaceEditParams{

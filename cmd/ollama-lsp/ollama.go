@@ -109,7 +109,7 @@ func applyOllamaContinuation(ctx context.Context, conn *jsonrpc2.Conn, uri proto
 	textToInsert = cleanOllamaCodeResult(textToInsert)
 	if textToInsert == "" {
 		log.Println("Ollama returned empty result after cleaning, not applying edit.")
-		showNotification(ctx, conn, protocol.Warning, "Ollama returned empty result.")
+		protocol.ShowNotification(ctx, conn, protocol.Warning, "Ollama returned empty result.")
 		return nil // Not an error, just nothing to apply
 	}
 
@@ -128,7 +128,7 @@ func applyOllamaLineReplacement(ctx context.Context, conn *jsonrpc2.Conn, uri pr
 	textToInsert = cleanOllamaCodeResult(textToInsert)
 	if textToInsert == "" {
 		log.Println("Ollama returned empty result after cleaning, not applying edit.")
-		showNotification(ctx, conn, protocol.Warning, "Ollama returned empty result.")
+		protocol.ShowNotification(ctx, conn, protocol.Warning, "Ollama returned empty result.")
 		return nil // Not an error, just nothing to apply
 	}
 

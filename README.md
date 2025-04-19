@@ -10,7 +10,7 @@ It contains two working language servers implementations:
     - Continue
     - Use the selection as a prompt.
     - Explain the selection.
-    ![Ollama LSP Example](img/ollama-lsp.jpg)
+  ![Ollama LSP Example](img/ollama-lsp.jpg)
 *   `languagetool-lsp`: A language server for the [Languagetool API](https://languagetool.org/dev).
     ![Languagetool LSP Example](img/languagetool-lsp.jpg)
 

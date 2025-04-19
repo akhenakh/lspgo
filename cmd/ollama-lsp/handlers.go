@@ -158,13 +158,13 @@ func handleExecuteCommand(ctx context.Context, conn *jsonrpc2.Conn, params *prot
 	if !ok {
 		errMsg := fmt.Sprintf("Document %s not found for command %s", args.URI, params.Command)
 		log.Println(errMsg)
-		showNotification(ctx, conn, protocol.Error, errMsg)
+		protocol.ShowNotification(ctx, conn, protocol.Error, errMsg)
 		// Return nil error, user was notified
 		return nil, nil
 	}
 
 	// Show "Thinking..." message
-	showNotification(ctx, conn, protocol.Info, fmt.Sprintf("Ollama (%s) is thinking...", args.Action))
+	protocol.ShowNotification(ctx, conn, protocol.Info, fmt.Sprintf("Ollama (%s) is thinking...", args.Action))
 
 	// Dispatch to action-specific handlers
 	var err error
@@ -178,7 +178,7 @@ func handleExecuteCommand(ctx context.Context, conn *jsonrpc2.Conn, params *prot
 	default:
 		errMsg := fmt.Sprintf("Unknown action '%s' in command arguments", args.Action)
 		log.Println(errMsg)
-		showNotification(ctx, conn, protocol.Error, errMsg)
+		protocol.ShowNotification(ctx, conn, protocol.Error, errMsg)
 		// Return nil error, user was notified
 		err = nil
 	}

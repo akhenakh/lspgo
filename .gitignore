@@ -14,3 +14,6 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 lspgo
+cmd/languagetool-lsp/languagetool-lsp
+cmd/ollama-lsp/ollama-lsp
+cmd/demo-lsp/demo-lsp

@@ -1,14 +1,10 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 
-	"github.com/akhenakh/lspgo/jsonrpc2"
 	"github.com/akhenakh/lspgo/protocol"
 )
 
@@ -77,28 +73,6 @@ func getCurrentLine(content string, lineNum uint) (string, error) {
 		return "", fmt.Errorf("line number %d is out of bounds (0-%d)", lineNum, len(lines)-1)
 	}
 	return lines[lineNum], nil
-}
-
-func showNotification(ctx context.Context, conn *jsonrpc2.Conn, msgType protocol.MessageType, message string) {
-	params := protocol.ShowMessageParams{
-		Type:    msgType,
-		Message: message,
-	}
-	rawParams, err := json.Marshal(params)
-	if err != nil {
-		log.Printf("Error marshalling showMessage params: %v", err)
-		return
-	}
-	notification := &jsonrpc2.NotificationMessage{
-		JSONRPC: jsonrpc2.Version,
-		Method:  protocol.MethodWindowShowMessage,
-		Params:  rawParams,
-	}
-	log.Printf("<-- Notification: Method=%s, Type=%d, Message=%s",
-		notification.Method, msgType, message)
-	if err := conn.Write(ctx, notification); err != nil {
-		log.Printf("Error sending showMessage notification: %v", err)
-	}
 }
 
 // addLineNumbers takes a block of text and prefixes each line with its number.

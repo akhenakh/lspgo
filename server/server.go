@@ -674,3 +674,16 @@ func (s *Server) Notify(ctx context.Context, method string, params interface{}) 
 
 	return nil
 }
+
+// mustRegister helper remains the same
+func (s *Server) MustRegister(method string, handlerFunc any) {
+	// Modify server.Register to allow overriding OR check if already registered before calling Fatalf
+	// For now, we assume server.Register might fail if called twice for the *same* implementation,
+	// but the issue was calling it for methods already handled by the default setup.
+	// A more robust server.Register could log a warning on override.
+	if err := s.Register(method, handlerFunc); err != nil {
+		// Check if the error is specifically "already registered" - maybe allow overriding?
+		// For now, the fatal approach is kept, but we removed the calls causing the conflict.
+		s.logger.Fatalf("Failed to register handler for method %s: %v", method, err)
+	}
+}
