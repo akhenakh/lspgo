@@ -7,6 +7,7 @@ before:
 builds:
   - main: ./cmd/ollama-lsp
     id: ollama-lsp
+    binary: ollama-lsp
     env:
       - CGO_ENABLED=0
     goos:
@@ -25,6 +26,7 @@ builds:
         goarm: 7
   - main: ./cmd/languagetool-lsp
     id: languagetool-lsp
+    binary: languagetool-lsp
     env:
       - CGO_ENABLED=0
     goos:
